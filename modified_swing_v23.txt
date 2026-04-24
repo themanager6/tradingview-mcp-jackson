@@ -1,0 +1,547 @@
+//@version=6
+indicator("EDGE FINDER v23 - Swing", overlay=true, max_boxes_count=10, max_lines_count=10)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDGE FINDER v20 — SWING / OPTIONS PANEL
+// Designed for: Stocks, ETFs, longer-term options (3mo / 6mo / 1yr / 2yr)
+// Timeframes:   Use on Daily or Weekly chart
+// Logic:        Same 4-step ICT sequence (Identify → Sweep → Prove → Enter)
+//               but calibrated for multi-week/multi-month moves
+// No session gates — replaces with day-of-week + trend strength filters
+// ATR regime uses % of price — works on any stock/ETF at any price level
+// v20 changes: intraday trend detection fires same-day (not at daily close)
+//              TGIF pattern only applies when above monthly equilibrium (ICT rule)
+//              panel moved to bottom_left to avoid overlap with Signal (top_center)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── INPUTS ───────────────────────────────────────────────────────────────────
+showPanel       = input.bool(true,  "Show Swing Panel")
+lookbackDays    = input.int(60,     "Lookback Period (bars)", minval=20, maxval=200)
+minQuality      = input.int(6,      "Min Quality Score (1-10)", minval=1, maxval=10)
+riskDollars     = input.float(500,  "Max Risk Per Trade ($)", minval=100, maxval=10000)
+premiumZone     = input.float(60.0, "Premium Zone Threshold (%)", minval=50.0, maxval=80.0, step=1.0)
+
+// ── TIMEFRAME WARNING ────────────────────────────────────────────────────────
+bool isSwingTF = timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly
+
+// ── ATR REGIME — % BASED (works on any price level) ─────────────────────────
+float atrRaw      = ta.atr(14)
+float atrPct      = close > 0 ? (atrRaw / close) * 100 : 0
+float atrAvgPct   = ta.sma(atrPct, 20)
+bool  atrExpanded = atrPct > atrAvgPct * 1.3
+bool  atrNormal   = atrPct >= atrAvgPct * 0.7 and atrPct <= atrAvgPct * 1.3
+bool  atrSqueeze  = atrPct < atrAvgPct * 0.7
+
+string atrRegime = atrExpanded ? "EXPANDED" : atrNormal ? "NORMAL" : "SQUEEZE"
+string atrNote = atrExpanded ? "High vol — widen stops, reduce size" : atrNormal ? "Normal vol — standard sizing" : "Low vol — breakout may be coming"
+bool atrOK = true
+
+// ── QUADRANTS — USING LOOKBACK PERIOD ────────────────────────────────────────
+float rangeHigh = ta.highest(high, lookbackDays)
+float rangeLow  = ta.lowest(low,  lookbackDays)
+float rangeSize = rangeHigh - rangeLow
+
+float quad100 = rangeHigh
+float quad75  = rangeLow + rangeSize * 0.75
+float quad50  = rangeLow + rangeSize * 0.50
+float quad25  = rangeLow + rangeSize * 0.25
+float quad0   = rangeLow
+
+float rangePercent   = rangeSize > 0 ? ((close - rangeLow) / rangeSize) * 100 : 50
+bool  inSwingPremium  = rangePercent > premiumZone
+bool  inSwingDiscount = rangePercent < (100 - premiumZone)
+
+// ── TREND — HTF STRUCTURE WITH INTRADAY OVERRIDE ─────────────────────────────
+// v20 FIX: include today's live high/low so trend flips intraday, not at close
+float weekHigh   = request.security(syminfo.tickerid, "W", high[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float weekLow    = request.security(syminfo.tickerid, "W", low[1],   barmerge.gaps_off, barmerge.lookahead_on)
+float weekHigh2  = request.security(syminfo.tickerid, "W", high[2],  barmerge.gaps_off, barmerge.lookahead_on)
+float weekLow2   = request.security(syminfo.tickerid, "W", low[2],   barmerge.gaps_off, barmerge.lookahead_on)
+float weekHigh0  = request.security(syminfo.tickerid, "W", high,     barmerge.gaps_off, barmerge.lookahead_on)  // current week live
+float weekLow0   = request.security(syminfo.tickerid, "W", low,      barmerge.gaps_off, barmerge.lookahead_on)  // current week live
+
+float monthHigh  = request.security(syminfo.tickerid, "M", high[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float monthLow   = request.security(syminfo.tickerid, "M", low[1],   barmerge.gaps_off, barmerge.lookahead_on)
+float monthHigh2 = request.security(syminfo.tickerid, "M", high[2],  barmerge.gaps_off, barmerge.lookahead_on)
+float monthLow2  = request.security(syminfo.tickerid, "M", low[2],   barmerge.gaps_off, barmerge.lookahead_on)
+float monthHigh0 = request.security(syminfo.tickerid, "M", high,     barmerge.gaps_off, barmerge.lookahead_on)  // current month live
+float monthLow0  = request.security(syminfo.tickerid, "M", low,      barmerge.gaps_off, barmerge.lookahead_on)  // current month live
+
+// Confirmed structure (closed candles)
+bool weekUptrend    = weekHigh  > weekHigh2  and weekLow  > weekLow2
+bool weekDowntrend  = weekHigh  < weekHigh2  and weekLow  < weekLow2
+bool monthUptrend   = monthHigh > monthHigh2 and monthLow > monthLow2
+bool monthDowntrend = monthHigh < monthHigh2 and monthLow < monthLow2
+
+// Intraday override — current week/month printing structure early
+bool weekIntradayUp   = weekHigh0  > weekHigh  and weekLow0  > weekLow
+bool weekIntradayDown = weekHigh0  < weekHigh  and weekLow0  < weekLow
+bool monthIntradayUp  = monthHigh0 > monthHigh and monthLow0 > monthLow
+bool monthIntradayDown= monthHigh0 < monthHigh and monthLow0 < monthLow
+
+bool htfUptrend   = timeframe.isweekly or timeframe.ismonthly ? (monthUptrend or monthIntradayUp) : (weekUptrend or weekIntradayUp)
+bool htfDowntrend = timeframe.isweekly or timeframe.ismonthly ? (monthDowntrend or monthIntradayDown) : (weekDowntrend or weekIntradayDown)
+
+// ── MARKET MODE ──────────────────────────────────────────────────────────────
+float highestClose = ta.highest(close, lookbackDays)
+float lowestClose  = ta.lowest(close,  lookbackDays)
+bool nearRangeHigh = close >= highestClose * 0.95
+bool nearRangeLow  = close <= lowestClose  * 1.05
+// Discovery Mode (swing): near range extreme + HTF trend. TradePlan uses ATR elevation instead — intentional timeframe difference.
+bool isDiscoveryMode = (nearRangeHigh or nearRangeLow) and (htfUptrend or htfDowntrend)
+bool isConsolidation = not isDiscoveryMode and atrSqueeze
+
+string marketMode = isDiscoveryMode ? "DISCOVERY" : isConsolidation ? "CONSOLIDATION" : "TRANSITIONING"
+
+// ── NARRATIVE ─────────────────────────────────────────────────────────────────
+string pdBias = rangePercent >= 60 ? "SHORT" : rangePercent <= 40 ? "LONG" : "NEUTRAL"
+string narrativeBias = pdBias
+if isDiscoveryMode
+    if htfUptrend
+        narrativeBias := "LONG"
+    else if htfDowntrend
+        narrativeBias := "SHORT"
+
+// ── SWEEP DETECTION ───────────────────────────────────────────────────────────
+int sweepWindow = 15
+
+float swingHighLevel = ta.highest(high, 20)
+float swingLowLevel  = ta.lowest(low,  20)
+float recentHigh = ta.highest(high, sweepWindow)
+float recentLow  = ta.lowest(low,  sweepWindow)
+
+bool recentBuySideSweep   = recentHigh > weekHigh  and close < weekHigh
+bool recentBuySideSweep2  = recentHigh > monthHigh and close < monthHigh
+bool recentSellSideSweep  = recentLow  < weekLow   and close > weekLow
+bool recentSellSideSweep2 = recentLow  < monthLow  and close > monthLow
+bool recentSwingHighSweep = recentHigh > swingHighLevel and close < swingHighLevel
+bool recentSwingLowSweep  = recentLow  < swingLowLevel  and close > swingLowLevel
+
+bool liquiditySwept = false
+string sweepDirection = "NONE"
+string sweepSource = "NONE"
+float sweepLevelPrice = na
+
+if recentBuySideSweep2
+    liquiditySwept  := true
+    sweepDirection  := "BUY_SIDE"
+    sweepSource     := "Monthly High"
+    sweepLevelPrice := monthHigh
+else if recentSellSideSweep2
+    liquiditySwept  := true
+    sweepDirection  := "SELL_SIDE"
+    sweepSource     := "Monthly Low"
+    sweepLevelPrice := monthLow
+else if recentBuySideSweep
+    liquiditySwept  := true
+    sweepDirection  := "BUY_SIDE"
+    sweepSource     := "Weekly High"
+    sweepLevelPrice := weekHigh
+else if recentSellSideSweep
+    liquiditySwept  := true
+    sweepDirection  := "SELL_SIDE"
+    sweepSource     := "Weekly Low"
+    sweepLevelPrice := weekLow
+else if recentSwingHighSweep
+    liquiditySwept  := true
+    sweepDirection  := "BUY_SIDE"
+    sweepSource     := "Swing High"
+    sweepLevelPrice := swingHighLevel
+else if recentSwingLowSweep
+    liquiditySwept  := true
+    sweepDirection  := "SELL_SIDE"
+    sweepSource     := "Swing Low"
+    sweepLevelPrice := swingLowLevel
+
+// ── EFFECTIVE NARRATIVE ───────────────────────────────────────────────────────
+string effectiveNarrative = narrativeBias
+if liquiditySwept
+    if sweepDirection == "BUY_SIDE"
+        effectiveNarrative := "SHORT"
+    else if sweepDirection == "SELL_SIDE"
+        effectiveNarrative := "LONG"
+
+// ── NWOG — NEW WEEK OPENING GAP (60-day rolling lookback) ────────────────────
+float nwogWOpen  = request.security(syminfo.tickerid, "W", open,     barmerge.gaps_off, barmerge.lookahead_on)
+float nwogWClose = request.security(syminfo.tickerid, "W", close[1], barmerge.gaps_off, barmerge.lookahead_on)
+int   nwogWTime  = request.security(syminfo.tickerid, "W", time,     barmerge.gaps_off, barmerge.lookahead_on)
+bool  nwogValid  = not na(nwogWOpen) and not na(nwogWClose) and (timenow - nwogWTime) <= 60 * 86400000
+float nwogHigh   = nwogValid ? math.max(nwogWOpen, nwogWClose) : na
+float nwogLow    = nwogValid ? math.min(nwogWOpen, nwogWClose) : na
+
+
+// ── FAIR VALUE GAP ────────────────────────────────────────────────────────────
+int fvgWindow = 10
+
+float recentBearTop = na
+float recentBearBot = na
+float recentBullTop = na
+float recentBullBot = na
+
+for i = 0 to fvgWindow - 1
+    if na(recentBearTop) and high[i] < low[i + 2]
+        float candidateTop = low[i + 2]
+        float candidateBot = high[i]
+        if math.abs(candidateTop - close) < close * 0.10
+            recentBearTop := candidateTop
+            recentBearBot := candidateBot
+    if na(recentBullTop) and low[i] > high[i + 2]
+        float candidateTop2 = low[i]
+        float candidateBot2 = high[i + 2]
+        if math.abs(candidateTop2 - close) < close * 0.10
+            recentBullTop := candidateTop2
+            recentBullBot := candidateBot2
+
+float fpfvgTop    = na
+float fpfvgBottom = na
+string fpfvgDir   = "NONE"
+
+if liquiditySwept
+    if effectiveNarrative == "SHORT" and not na(recentBearTop)
+        fpfvgTop    := recentBearTop
+        fpfvgBottom := recentBearBot
+        fpfvgDir    := "BEARISH"
+    else if effectiveNarrative == "LONG" and not na(recentBullTop)
+        fpfvgTop    := recentBullTop
+        fpfvgBottom := recentBullBot
+        fpfvgDir    := "BULLISH"
+
+float fpfvgCE = not na(fpfvgTop) and not na(fpfvgBottom) ? (fpfvgTop + fpfvgBottom) / 2 : na
+
+bool fpfvgFound    = not na(fpfvgTop) and not na(fpfvgBottom)
+bool priceNearFVG  = fpfvgFound and math.abs(close - fpfvgCE) < (fpfvgTop - fpfvgBottom) * 2
+bool priceInFVG    = fpfvgFound and close >= fpfvgBottom and close <= fpfvgTop
+bool bodiesCorrect = fpfvgFound and fpfvgDir == "BEARISH" ? close < fpfvgCE : fpfvgDir == "BULLISH" ? close > fpfvgCE : false
+bool fpfvgComplete = liquiditySwept and fpfvgFound and (priceNearFVG or priceInFVG)
+
+// ── DAY OF WEEK CONTEXT ───────────────────────────────────────────────────────
+int  currentDOW      = dayofweek(time)
+bool isMondayTuesday = currentDOW == dayofweek.monday or currentDOW == dayofweek.tuesday
+bool isWedThurs      = currentDOW == dayofweek.wednesday or currentDOW == dayofweek.thursday
+bool isFriday        = currentDOW == dayofweek.friday
+
+// v20: TGIF pattern only applies when price is ABOVE monthly equilibrium
+// ICT: "TGIF applies when price is above monthly equilibrium — Friday often retraces"
+// When below monthly equilibrium, Friday often extends instead
+float monthlyMidpoint = (monthHigh + monthLow) / 2
+bool aboveMonthlyEQ   = close > monthlyMidpoint
+bool tgifApplies      = isFriday and aboveMonthlyEQ
+
+// Raise quality threshold on TGIF only when the pattern applies
+int effectiveMinQuality = tgifApplies ? math.max(minQuality, 8) : minQuality
+
+// ── QUALITY SCORE ─────────────────────────────────────────────────────────────
+bool htfAligned = (effectiveNarrative == "LONG" and htfUptrend) or (effectiveNarrative == "SHORT" and htfDowntrend)
+bool notInNML   = rangePercent < 45 or rangePercent > 55 or isDiscoveryMode
+
+int qualityScore = 0
+if fpfvgComplete
+    qualityScore += 3
+if liquiditySwept
+    qualityScore += 2
+if htfAligned
+    qualityScore += 2
+if not isConsolidation
+    qualityScore += 1
+if notInNML
+    qualityScore += 1
+if isDiscoveryMode
+    qualityScore += 1
+
+int qualityNorm = math.min(math.max(qualityScore, 0), 10)
+
+// ── ENTRY & TARGETS ───────────────────────────────────────────────────────────
+float entryPrice = na
+float stopPrice  = na
+float target1    = na
+float target2    = na
+float target3    = na
+string tradeDir  = "—"
+
+float entryOffset = close * 0.001
+
+if fpfvgComplete and qualityNorm >= effectiveMinQuality
+    if fpfvgDir == "BULLISH"
+        tradeDir   := "LONG / BUY CALLS"
+        entryPrice := fpfvgBottom + entryOffset
+        stopPrice  := fpfvgBottom - (rangeSize * 0.08)
+        target1 := entryPrice < quad25 ? quad25 : entryPrice < quad50 ? quad50 : entryPrice < quad75 ? quad75 : entryPrice + atrRaw * 3
+        target2 := target1 == quad25 ? quad50 : target1 == quad50 ? quad75 : target1 == quad75 ? quad100 : target1 + atrRaw * 2
+        target3 := target2 == quad50 ? quad75 : target2 == quad75 ? quad100 : target2 + atrRaw * 2
+    else if fpfvgDir == "BEARISH"
+        tradeDir   := "SHORT / BUY PUTS"
+        entryPrice := fpfvgTop - entryOffset
+        stopPrice  := fpfvgTop + (rangeSize * 0.08)
+        target1 := entryPrice > quad75 ? quad75 : entryPrice > quad50 ? quad50 : entryPrice > quad25 ? quad25 : entryPrice - atrRaw * 3
+        target2 := target1 == quad75 ? quad50 : target1 == quad50 ? quad25 : target1 == quad25 ? quad0 : target1 - atrRaw * 2
+        target3 := target2 == quad50 ? quad25 : target2 == quad25 ? quad0 : target2 - atrRaw * 2
+
+// ── HOLD TIME GUIDANCE ────────────────────────────────────────────────────────
+string holdGuidance   = "—"
+string expiryGuidance = "—"
+
+if fpfvgComplete and qualityNorm >= effectiveMinQuality
+    if isDiscoveryMode and htfAligned
+        holdGuidance   := "4–8 weeks"
+        expiryGuidance := "90–180 DTE recommended"
+    else if htfAligned
+        holdGuidance   := "2–4 weeks"
+        expiryGuidance := "60–90 DTE recommended"
+    else
+        holdGuidance   := "1–2 weeks"
+        expiryGuidance := "45–60 DTE — trend not ideal"
+
+// ── SWEEP REVERSAL — ICT SELL-SIDE SWEEP + RECLAIM (EARLY WARNING) ────────────
+// Bearish-to-bullish: sweeps a significant swing low then reclaims above it
+// Condition 4: price is inside any weekly bullish FVG from last 20 weekly bars
+// EARLY WARNING only — does NOT change htfDowntrend
+weekFVG() =>
+    float fl = na
+    float fh = na
+    for i = 0 to 19
+        if low[i] > high[i + 2]
+            fl := low[i]
+            fh := high[i + 2]
+            break
+    [fl, fh]
+
+[wBullFVGLow, wBullFVGHigh] = request.security(syminfo.tickerid, "W", weekFVG(), barmerge.gaps_off, barmerge.lookahead_on)
+
+float prior20Low          = ta.lowest(low[1], 20)
+bool  sweptBelow          = low < prior20Low or low[1] < prior20Low[1] or low[2] < prior20Low[2]
+bool  reclaimedLow        = close > prior20Low
+bool  weeklyBullFVGExists = not na(wBullFVGLow) and close >= wBullFVGHigh and close <= wBullFVGLow
+bool  aboveWeeklyFVGLow   = close > weekLow0
+
+bool sweepReversalSignal = htfDowntrend and sweptBelow and reclaimedLow and weeklyBullFVGExists and aboveWeeklyFVGLow
+
+if sweepReversalSignal and not sweepReversalSignal[1]
+    label.new(bar_index, low, "⚡ SWEEP REVERSAL — Potential HTF Long",
+         xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_up,
+         color=color.orange, textcolor=color.black, size=size.small)
+
+// ── SIGNAL STATUS ─────────────────────────────────────────────────────────────
+bool sweepFPFVGMatch = (sweepDirection == "SELL_SIDE" and fpfvgDir == "BULLISH") or (sweepDirection == "BUY_SIDE" and fpfvgDir == "BEARISH") or not liquiditySwept
+bool allGatesPass    = fpfvgComplete and bodiesCorrect and qualityNorm >= effectiveMinQuality and liquiditySwept and sweepFPFVGMatch and htfAligned and not (fpfvgDir == "BULLISH" and inSwingPremium) and not (fpfvgDir == "BEARISH" and inSwingDiscount)
+
+string signalStatus = "💤  WAIT"
+color  signalColor  = color.gray
+color  signalBg     = color.new(color.gray, 85)
+
+if allGatesPass
+    signalStatus := fpfvgDir == "BULLISH" ? "🚨  ENTER — BUY CALLS" : "🚨  ENTER — BUY PUTS"
+    signalColor  := color.white
+    signalBg     := color.new(color.green, 20)
+else if fpfvgComplete and liquiditySwept and qualityNorm >= effectiveMinQuality
+    signalStatus := "⏳  WATCH — HTF not aligned"
+    signalColor  := color.yellow
+    signalBg     := color.new(color.yellow, 82)
+else if liquiditySwept and fpfvgFound
+    signalStatus := "⚙  SETUP BUILDING"
+    signalColor  := color.orange
+    signalBg     := color.new(color.orange, 85)
+else if not liquiditySwept
+    signalStatus := "💤  WAIT — No sweep yet"
+    signalColor  := color.gray
+    signalBg     := color.new(color.gray, 85)
+
+string reasonStr = "—"
+if allGatesPass
+    reasonStr := fpfvgDir + " FVG · Score " + str.tostring(qualityNorm) + "/10 · " + sweepSource + " swept"
+else if not liquiditySwept
+    reasonStr := "Waiting for sweep of Weekly/Monthly level"
+else if not fpfvgFound
+    reasonStr := "Sweep confirmed (" + sweepSource + ") — watching for FVG"
+else if not fpfvgComplete
+    reasonStr := "FVG found — waiting for price to interact · " + sweepSource
+else if not htfAligned
+    reasonStr := "Setup ready — HTF trend not confirmed"
+else if qualityNorm < effectiveMinQuality
+    reasonStr := "Score " + str.tostring(qualityNorm) + "/" + str.tostring(effectiveMinQuality) + " — need " + str.tostring(effectiveMinQuality) + "+"
+else
+    reasonStr := "Conditions building..."
+
+// ── RISK CALCULATION ──────────────────────────────────────────────────────────
+float riskPts = not na(entryPrice) and not na(stopPrice) ? math.abs(entryPrice - stopPrice) : na
+float reward1 = not na(entryPrice) and not na(target1)   ? math.abs(entryPrice - target1)   : na
+float reward2 = not na(entryPrice) and not na(target2)   ? math.abs(entryPrice - target2)   : na
+float rr1     = not na(riskPts) and riskPts > 0 and not na(reward1) ? reward1 / riskPts : na
+float rr2     = not na(riskPts) and riskPts > 0 and not na(reward2) ? reward2 / riskPts : na
+
+// ── DISPLAY ───────────────────────────────────────────────────────────────────
+if showPanel and barstate.islast
+    // v20: moved to bottom_left to avoid overlap with Signal (top_center) and Context (top_right)
+    var table sw = table.new(position.bottom_left, 2, 24,
+         bgcolor      = color.new(color.black, 10),
+         border_color = color.new(color.gray, 60),
+         border_width = 1,
+         frame_color  = color.new(color.gray, 40),
+         frame_width  = 1)
+
+    int r = 0
+
+    table.cell(sw, 0, r, "📈 SWING v23", text_color=color.orange, text_size=size.small, bgcolor=color.new(color.black, 20))
+    table.cell(sw, 1, r, syminfo.ticker, text_color=color.white, text_size=size.small, bgcolor=color.new(color.black, 20))
+    r += 1
+
+    color tfCol = isSwingTF ? color.lime : color.red
+    string tfMsg = isSwingTF ? "✓ Good timeframe" : "⚠ Use Daily/Weekly"
+    table.cell(sw, 0, r, tfMsg, text_color=tfCol, text_size=size.tiny, bgcolor=color.new(color.black, 30))
+    table.cell(sw, 1, r, marketMode, text_color=isDiscoveryMode ? color.aqua : color.yellow, text_size=size.tiny, bgcolor=color.new(color.black, 30))
+    r += 1
+
+    table.cell(sw, 0, r, signalStatus, text_color=signalColor, text_size=size.normal, bgcolor=signalBg)
+    table.cell(sw, 1, r, "", text_color=signalColor, text_size=size.normal, bgcolor=signalBg)
+    r += 1
+
+    table.cell(sw, 0, r, reasonStr, text_color=color.new(color.gray, 10), text_size=size.tiny, bgcolor=color.new(color.black, 30))
+    table.cell(sw, 1, r, "", text_color=color.gray, text_size=size.tiny, bgcolor=color.new(color.black, 30))
+    r += 1
+
+    table.cell(sw, 0, r, "── TRADE ──────────", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=color.new(color.black, 40))
+    table.cell(sw, 1, r, "", bgcolor=color.new(color.black, 40))
+    r += 1
+
+    color dirCol = tradeDir == "LONG / BUY CALLS" ? color.lime : tradeDir == "SHORT / BUY PUTS" ? color.red : color.gray
+    table.cell(sw, 0, r, "Direction", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, tradeDir, text_color=dirCol, text_size=size.tiny)
+    r += 1
+
+    table.cell(sw, 0, r, "Entry", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, not na(entryPrice) ? str.tostring(entryPrice, "#.##") : "—", text_color=color.white, text_size=size.small)
+    r += 1
+
+    table.cell(sw, 0, r, "Stop", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, not na(stopPrice) ? str.tostring(stopPrice, "#.##") : "—", text_color=color.red, text_size=size.small)
+    r += 1
+
+    string t1str = not na(target1) ? str.tostring(target1, "#.##") + (not na(rr1) ? "  (" + str.tostring(rr1, "#.#") + "R)" : "") : "—"
+    table.cell(sw, 0, r, "Target 1", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, t1str, text_color=color.lime, text_size=size.small)
+    r += 1
+
+    string t2str = not na(target2) ? str.tostring(target2, "#.##") + (not na(rr2) ? "  (" + str.tostring(rr2, "#.#") + "R)" : "") : "—"
+    table.cell(sw, 0, r, "Target 2", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, t2str, text_color=color.lime, text_size=size.small)
+    r += 1
+
+    table.cell(sw, 0, r, "Target 3", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, not na(target3) ? str.tostring(target3, "#.##") : "—", text_color=color.new(color.lime, 30), text_size=size.small)
+    r += 1
+
+    table.cell(sw, 0, r, "── OPTIONS ─────────", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=color.new(color.black, 40))
+    table.cell(sw, 1, r, "", bgcolor=color.new(color.black, 40))
+    r += 1
+
+    table.cell(sw, 0, r, "Hold Time", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, holdGuidance, text_color=color.orange, text_size=size.tiny)
+    r += 1
+
+    table.cell(sw, 0, r, "Expiry", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, expiryGuidance, text_color=color.yellow, text_size=size.tiny)
+    r += 1
+
+    table.cell(sw, 0, r, "── CONTEXT ─────────", text_color=color.new(color.gray, 50), text_size=size.tiny, bgcolor=color.new(color.black, 40))
+    table.cell(sw, 1, r, "", bgcolor=color.new(color.black, 40))
+    r += 1
+
+    color htfCol = htfUptrend ? color.lime : htfDowntrend ? color.red : color.yellow
+    string htfStr = htfUptrend ? "↑ UPTREND" : htfDowntrend ? "↓ DOWNTREND" : "→ NEUTRAL"
+    table.cell(sw, 0, r, "HTF Trend", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, htfStr, text_color=htfCol, text_size=size.tiny)
+    r += 1
+
+    color atrCol = atrNormal ? color.lime : atrExpanded ? color.red : color.orange
+    table.cell(sw, 0, r, "Volatility", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, atrRegime + "  " + str.tostring(atrPct, "#.##") + "%", text_color=atrCol, text_size=size.tiny)
+    r += 1
+
+    color rngCol = rangePercent >= 70 ? color.red : rangePercent <= 30 ? color.lime : color.yellow
+    string rngStr = str.tostring(math.round(rangePercent)) + "% of " + str.tostring(lookbackDays) + "-bar range"
+    table.cell(sw, 0, r, "Range Pos", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, rngStr, text_color=rngCol, text_size=size.tiny)
+    r += 1
+
+    color sweepCol = sweepDirection == "BUY_SIDE" ? color.red : sweepDirection == "SELL_SIDE" ? color.lime : color.gray
+    string sweepStr = liquiditySwept ? sweepDirection + " · " + sweepSource : "None yet"
+    table.cell(sw, 0, r, "Sweep", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, sweepStr, text_color=sweepCol, text_size=size.tiny)
+    r += 1
+
+    color nwogCol = not na(nwogHigh) ? color.aqua : color.gray
+    table.cell(sw, 0, r, "NWOG Hi", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, not na(nwogHigh) ? str.tostring(nwogHigh, "#.##") : "—", text_color=nwogCol, text_size=size.tiny)
+    r += 1
+
+    table.cell(sw, 0, r, "NWOG Lo", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, not na(nwogLow) ? str.tostring(nwogLow, "#.##") : "—", text_color=nwogCol, text_size=size.tiny)
+    r += 1
+
+    // v20: TGIF note shows whether pattern applies based on monthly EQ position
+    color scCol = qualityNorm >= effectiveMinQuality ? color.lime : qualityNorm >= 5 ? color.yellow : color.red
+    string tgifNote = isFriday ? (tgifApplies ? "  TGIF ↑EQ" : "  Fri ↓EQ") : ""
+    table.cell(sw, 0, r, "Score", text_color=color.gray, text_size=size.tiny)
+    table.cell(sw, 1, r, str.tostring(qualityNorm) + "/10" + tgifNote, text_color=scCol, text_size=size.small)
+    r += 1
+
+    table.cell(sw, 0, r, "⚠ Earnings", text_color=color.orange, text_size=size.tiny)
+    table.cell(sw, 1, r, "Check calendar!", text_color=color.orange, text_size=size.tiny)
+
+// ── ALERTS ────────────────────────────────────────────────────────────────────
+plot(qualityNorm, "SwingScore", display=display.none)
+
+alertcondition(barstate.isconfirmed and allGatesPass and not allGatesPass[1] and fpfvgDir == "BULLISH",
+     title="🚨 SWING — ENTER BULLISH (BUY CALLS)",
+     message="🚨 SWING ENTER · {{ticker}} · BULLISH · BUY CALLS @ {{close}} · Score {{plot(\"SwingScore\")}}/10")
+alertcondition(barstate.isconfirmed and allGatesPass and not allGatesPass[1] and fpfvgDir == "BEARISH",
+     title="🚨 SWING — ENTER BEARISH (BUY PUTS)",
+     message="🚨 SWING ENTER · {{ticker}} · BEARISH · BUY PUTS @ {{close}} · Score {{plot(\"SwingScore\")}}/10")
+
+alertcondition(liquiditySwept and not liquiditySwept[1],
+     title="💥 SWING — Sweep Detected",
+     message="💥 SWING — Sweep Detected | {{ticker}} @ {{close}} | Liquidity sweep just fired. Setup may be building.")
+
+alertcondition(fpfvgFound and liquiditySwept and not (fpfvgFound[1] and liquiditySwept[1]),
+     title="⚙ SWING — FVG Found After Sweep",
+     message="⚙ SWING — FVG Found After Sweep | {{ticker}} @ {{close}} | FVG detected after sweep. Setup building.")
+
+alertcondition(htfDowntrend and not htfDowntrend[1],
+     title="📉 SWING — HTF Turned Bearish",
+     message="📉 SWING — HTF Turned Bearish | {{ticker}} | Higher timeframe trend just turned DOWN. Puts / short bias favored.")
+
+alertcondition(htfUptrend and not htfUptrend[1],
+     title="📈 SWING — HTF Turned Bullish",
+     message="📈 SWING — HTF Turned Bullish | {{ticker}} | Higher timeframe trend just turned UP. Calls / long bias favored.")
+
+alertcondition(rangePercent < 25 and rangePercent[1] >= 25,
+     title="🟢 SWING — Price Entered Discount Zone",
+     message="🟢 SWING — Price Entered Discount Zone | {{ticker}} @ {{close}} | Bottom 25% of range. Watch for sweep + FVG long setup.")
+
+alertcondition(rangePercent > 75 and rangePercent[1] <= 75,
+     title="🔴 SWING — Price Entered Premium Zone",
+     message="🔴 SWING — Price Entered Premium Zone | {{ticker}} @ {{close}} | Top 25% of range. Watch for sweep + FVG short setup.")
+
+alertcondition(isDiscoveryMode and not isDiscoveryMode[1],
+     title="🚀 SWING — Discovery Mode Started",
+     message="🚀 SWING — Discovery Mode Started | {{ticker}} | Market entered trending mode. Directional options plays now higher probability.")
+
+alertcondition(isConsolidation and not isConsolidation[1],
+     title="⚠ SWING — Consolidation Detected",
+     message="⚠ SWING — Consolidation Detected | {{ticker}} | Market entered consolidation. Reduce options size, avoid new directional entries.")
+
+alertcondition(atrExpanded and not atrExpanded[1],
+     title="⚠ SWING — Volatility Expanded",
+     message="⚠ SWING — Volatility Expanded | {{ticker}} | ATR expanded above average. Widen stops. Options premiums elevated.")
+
+alertcondition(atrSqueeze and not atrSqueeze[1],
+     title="🔔 SWING — Volatility Squeeze",
+     message="🔔 SWING — Volatility Squeeze | {{ticker}} | ATR compressed. Breakout likely approaching. Options premiums cheap.")
+
+alertcondition(sweepReversalSignal and not sweepReversalSignal[1],
+     title="⚡ SWING — Sweep Reversal Signal",
+     message="⚡ SWING — Sweep Reversal Signal | {{ticker}} @ {{close}} | Sell-side sweep + reclaim detected. Potential HTF long setup forming. Check weekly FVG for support.")
+
+// v20: TGIF alert only fires when pattern actually applies (above monthly EQ)
+alertcondition(tgifApplies and allGatesPass and not (tgifApplies[1] and allGatesPass[1]),
+     title="⚠ SWING — TGIF Signal (Above Monthly EQ)",
+     message="⚠ SWING — TGIF Signal (Above Monthly EQ) | {{ticker}} @ {{close}} | Signal on Friday above monthly equilibrium — TGIF pattern applies. Consider waiting for Monday.")
