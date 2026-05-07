@@ -103,6 +103,233 @@ export async function list() {
   return { success: true, alert_count: result?.alerts?.length || 0, source: 'internal_api', alerts: result?.alerts || [], error: result?.error };
 }
 
+/**
+ * Update an existing alert subscription's message field.
+ *
+ * Pre-condition: the TV Alerts panel must be open in the right widget bar so that
+ * the virtual list is mounted and we can read items[] from the React fiber.
+ *
+ * Idempotent: if the alert's current message already starts with '{', the function
+ * returns action="skipped" with reason="already_json" and does NOT overwrite.
+ *
+ * Handles BOTH UI editor variants TV uses for the message field:
+ *   - inline: textarea expands inside the parent edit-alert dialog
+ *   - modal:  separate [data-qa-id="alerts-message-edit-dialog"] popup
+ *
+ * @param {Object} args
+ * @param {number} args.alert_id - TV alert subscription id (from alert_list)
+ * @param {string} args.new_message - New message string (placeholders like {{ticker}} preserved)
+ * @returns {Promise<Object>} { success, alert_id, action: "updated"|"skipped"|"failed", ... }
+ */
+export async function updateMessage({ alert_id, new_message }) {
+  if (typeof alert_id !== 'number' || !Number.isFinite(alert_id)) {
+    return { success: false, error: 'alert_id must be a finite number', alert_id };
+  }
+  if (typeof new_message !== 'string' || new_message.length === 0) {
+    return { success: false, error: 'new_message must be a non-empty string', alert_id };
+  }
+
+  // Step 1: stash items + callbacks from the alerts virtual list.
+  const stashRes = await evaluate(`
+    (function stash() {
+      const desc = document.querySelector('[data-name="alert-item-description"]');
+      if (!desc) return { error: 'no alert-item-description — open the Alerts panel first' };
+      const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+      if (!fk) return { error: 'no react fiber on description' };
+      let walker = desc[fk];
+      for (let d = 0; d < 30; d++) {
+        if (!walker) break;
+        const mp = walker.memoizedProps;
+        if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+          window.__efCallbacks = mp.itemData.callbacks;
+          window.__efItems = mp.itemData.items;
+          return { stashed: true, items_count: mp.itemData.items.length };
+        }
+        walker = walker.return;
+      }
+      return { error: 'virtual list not found' };
+    })()
+  `);
+  if (!stashRes || stashRes.error) {
+    return { success: false, error: stashRes?.error || 'stash failed', alert_id };
+  }
+
+  // Step 2: defensively clear search filter (it can hide alerts from items[]).
+  const clearRes = await evaluate(`
+    (function clearSearch() {
+      const search = document.querySelector('input[type="search"], input[placeholder*="earch" i]');
+      if (!search) return { cleared: false };
+      const before = search.value;
+      if (before === '') return { was_empty: true };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      search.dispatchEvent(new Event('change', { bubbles: true }));
+      return { cleared: true, before_value: before };
+    })()
+  `);
+  let itemsCount = stashRes.items_count;
+  if (clearRes?.cleared && clearRes.before_value) {
+    // Re-stash after debounce
+    const restash = await evaluateAsync(`
+      (async function restash() {
+        await new Promise(r => setTimeout(r, 800));
+        const desc = document.querySelector('[data-name="alert-item-description"]');
+        if (!desc) return { error: 'no description after restash' };
+        const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+        let walker = desc[fk];
+        for (let d = 0; d < 30; d++) {
+          if (!walker) break;
+          const mp = walker.memoizedProps;
+          if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+            window.__efCallbacks = mp.itemData.callbacks;
+            window.__efItems = mp.itemData.items;
+            return { restashed: true, items_count: mp.itemData.items.length };
+          }
+          walker = walker.return;
+        }
+        return { error: 'virtual list not found after restash' };
+      })()
+    `);
+    if (!restash || restash.error) {
+      return { success: false, error: 'restash after search-clear failed: ' + (restash?.error || ''), alert_id };
+    }
+    itemsCount = restash.items_count;
+  }
+
+  // Step 3: run the per-alert update sequence.
+  const newMessageEscaped = JSON.stringify(new_message);
+  const updateExpr = `
+    (async function updateOne() {
+      const items = window.__efItems;
+      const callbacks = window.__efCallbacks;
+      if (!items || !callbacks) return { error: 'stash missing' };
+
+      const idx = items.findIndex(it => it.id === ${alert_id});
+      if (idx < 0) return { error: 'alert_id not found in items', alert_id: ${alert_id}, items_total: items.length };
+
+      // 1. Open the dialog
+      callbacks.onEditButtonClick(idx);
+      let dialog = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        dialog = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (dialog && dialog.offsetWidth) break;
+      }
+      if (!dialog || !dialog.offsetWidth) return { error: 'dialog did not appear', alert_id: ${alert_id} };
+
+      // 2. Capture current message
+      const msgBtn = dialog.querySelector('[data-qa-id="alert-message-button"]');
+      if (!msgBtn) return { error: 'no alert-message-button', alert_id: ${alert_id} };
+      const oldMessage = (msgBtn.getAttribute('data-overflow-tooltip-html') || msgBtn.textContent || '').trim();
+
+      // Idempotency: skip if already JSON
+      if (oldMessage.startsWith('{')) {
+        const cancel = dialog.querySelector('[data-qa-id="cancel"]');
+        if (cancel) {
+          const pk = Object.keys(cancel).find(k => k.startsWith('__reactProps$'));
+          if (pk && cancel[pk].onClick) {
+            cancel[pk].onClick({ preventDefault: () => {}, stopPropagation: () => {}, currentTarget: cancel, target: cancel, nativeEvent: {} });
+          }
+        }
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 50));
+          const still = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+          if (!still || !still.offsetWidth) break;
+        }
+        return { skipped: true, reason: 'already_json', alert_id: ${alert_id}, current_message_preview: oldMessage.substring(0, 120) };
+      }
+
+      // 3. Click message button to open the editor (inline OR modal)
+      const msgPK = Object.keys(msgBtn).find(k => k.startsWith('__reactProps$'));
+      if (!msgPK || !msgBtn[msgPK].onClick) return { error: 'no onClick on alert-message-button', alert_id: ${alert_id} };
+      msgBtn[msgPK].onClick({ preventDefault: () => {}, stopPropagation: () => {}, currentTarget: msgBtn, target: msgBtn, nativeEvent: {} });
+
+      // 4. Wait for textarea
+      let ta = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        ta = document.querySelector('#alert-message');
+        if (ta && ta.offsetWidth) break;
+      }
+      if (!ta || !ta.offsetWidth) return { error: 'textarea did not appear', alert_id: ${alert_id} };
+
+      // 5. Set new value
+      const newMsg = ${newMessageEscaped};
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(ta, newMsg);
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      if (ta.value !== newMsg) return { error: 'value did not stick', alert_id: ${alert_id} };
+
+      // 6. Click Apply (modal's submit if modal open, else parent's submit)
+      const messageModal = document.querySelector('[data-qa-id="alerts-message-edit-dialog"]');
+      const editorRoot = messageModal || dialog;
+      const usingModal = !!messageModal;
+      const apply = editorRoot.querySelector('[data-qa-id="submit"]');
+      if (!apply) return { error: 'no submit (apply) in editor root', alert_id: ${alert_id}, modal: usingModal };
+      const applyPK = Object.keys(apply).find(k => k.startsWith('__reactProps$'));
+      if (!applyPK || !apply[applyPK].onClick) return { error: 'no onClick on apply', alert_id: ${alert_id} };
+      apply[applyPK].onClick({ preventDefault: () => {}, stopPropagation: () => {}, currentTarget: apply, target: apply, nativeEvent: {} });
+
+      // 7. Wait for editor to close
+      let editorClosed = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        if (usingModal) {
+          const stillModal = document.querySelector('[data-qa-id="alerts-message-edit-dialog"]');
+          if (!stillModal || !stillModal.offsetWidth) { editorClosed = true; break; }
+        } else {
+          const stillTa = document.querySelector('#alert-message');
+          if (!stillTa || !stillTa.offsetWidth) { editorClosed = true; break; }
+        }
+      }
+      if (!editorClosed) return { error: 'editor did not close after apply', alert_id: ${alert_id}, ui_path: usingModal ? 'modal' : 'inline' };
+
+      // 8. Sanity: parent's message-button now shows the new message
+      const msgBtnAfter = dialog.querySelector('[data-qa-id="alert-message-button"]');
+      const msgBtnText = msgBtnAfter ? (msgBtnAfter.textContent || '').trim() : '';
+      if (!msgBtnText.startsWith('{')) {
+        return { error: 'message-button does not show new JSON after apply', alert_id: ${alert_id}, msg_btn_text_preview: msgBtnText.substring(0, 100) };
+      }
+
+      // 9. Click Save on parent
+      await new Promise(r => setTimeout(r, 100));
+      const save = dialog.querySelector('[data-qa-id="submit"]');
+      if (!save) return { error: 'no save button in parent', alert_id: ${alert_id} };
+      const saveText = (save.textContent || '').trim();
+      if (saveText !== 'Save') return { error: 'parent submit text is not Save', alert_id: ${alert_id}, save_text: saveText };
+      const savePK = Object.keys(save).find(k => k.startsWith('__reactProps$'));
+      if (!savePK || !save[savePK].onClick) return { error: 'no onClick on save', alert_id: ${alert_id} };
+      save[savePK].onClick({ preventDefault: () => {}, stopPropagation: () => {}, currentTarget: save, target: save, nativeEvent: {} });
+
+      // 10. Wait for parent dialog to close
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        const still = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (!still || !still.offsetWidth) {
+          return { updated: true, alert_id: ${alert_id}, old_message: oldMessage.substring(0, 250), new_message: newMsg, ui_path: usingModal ? 'modal' : 'inline' };
+        }
+      }
+      return { error: 'dialog did not close after save', alert_id: ${alert_id}, ui_path: usingModal ? 'modal' : 'inline' };
+    })()
+  `;
+
+  const res = await evaluateAsync(updateExpr);
+
+  if (!res) {
+    return { success: false, error: 'no result from update sequence', alert_id };
+  }
+  if (res.skipped) {
+    return { success: true, action: 'skipped', alert_id, reason: res.reason, current_message_preview: res.current_message_preview, items_count: itemsCount };
+  }
+  if (res.updated) {
+    return { success: true, action: 'updated', alert_id, old_message: res.old_message, new_message: res.new_message, ui_path: res.ui_path, items_count: itemsCount };
+  }
+  return { success: false, action: 'failed', alert_id, error: res.error || 'unknown failure', detail: res, items_count: itemsCount };
+}
+
 export async function deleteAlerts({ delete_all }) {
   if (delete_all) {
     const result = await evaluate(`

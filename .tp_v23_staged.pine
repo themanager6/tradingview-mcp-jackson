@@ -1,5 +1,5 @@
 //@version=6
-indicator("EDGE FINDER v22.2 - Trade Plan", overlay=true, max_boxes_count=50, max_lines_count=50)
+indicator("EDGE FINDER v23 - Trade Plan", overlay=true, max_boxes_count=50, max_lines_count=50)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EDGE FINDER v20 — TRADE PLAN PANEL
@@ -33,6 +33,16 @@ bool cpInputsWired = cpSignalSource == math.round(cpSignalSource) and cpSignalSo
 bool cpAlignedLong  = cpInputsWired and cpSignalSource >  0.5
 bool cpAlignedShort = cpInputsWired and cpSignalSource < -0.5
 int  cpScoreInt     = cpInputsWired ? int(math.round(cpScoreSource)) : 0
+
+// ─── LAYER 2 wiring (v23 — INDICATOR-2) — Equilibrium Block from CP ───
+equilibriumBlockSource = input.source(close, title="Equilibrium Block (from CP)", group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v23 - Context Panel → Equilibrium Block")
+bool equilibriumBlockWired   = equilibriumBlockSource == math.round(equilibriumBlockSource) and equilibriumBlockSource >= 0 and equilibriumBlockSource <= 1
+bool inEquilibriumNoMansLand = equilibriumBlockWired and equilibriumBlockSource > 0.5
+
+// ─── LAYER 7 wiring (v23 — INDICATOR-5) — Gradient Overlap from CP ───
+gradientOverlapInput = input.source(close, title="Gradient Overlap (from CP)", group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v23 - Context Panel → Gradient Overlap")
+bool gradientOverlapWired   = gradientOverlapInput == math.round(gradientOverlapInput) and gradientOverlapInput >= 0 and gradientOverlapInput <= 1
+bool gradientLevelOverlap   = gradientOverlapWired and gradientOverlapInput > 0.5
 
 sweepMaxAge  = input.float(8.0,  "Max Sweep Age (hours)", minval=4.0, maxval=48.0, step=1.0, group="Sweep Filters")
 
@@ -1344,11 +1354,354 @@ bool dualAuthorized      = dualAuthorizedLong or dualAuthorizedShort
 bool enterNowLong  = barstate.isconfirmed and dualAuthorizedLong  and not dualAuthorizedLong[1]
 bool enterNowShort = barstate.isconfirmed and dualAuthorizedShort and not dualAuthorizedShort[1]
 
-alertcondition(enterNowLong,  title="🚨 ENTER NOW — LONG (Dual-Indicator Authorized)",  message="{\"version\":\"1\",\"panel_version\":\"v22.2\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"LONG\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
-alertcondition(enterNowShort, title="🚨 ENTER NOW — SHORT (Dual-Indicator Authorized)", message="{\"version\":\"1\",\"panel_version\":\"v22.2\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"SHORT\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
+alertcondition(enterNowLong,  title="🚨 ENTER NOW — LONG (Dual-Indicator Authorized)",  message="{\"version\":\"1\",\"panel_version\":\"v23\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"LONG\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
+alertcondition(enterNowShort, title="🚨 ENTER NOW — SHORT (Dual-Indicator Authorized)", message="{\"version\":\"1\",\"panel_version\":\"v23\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"SHORT\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE MACHINE (v23 — INDICATOR-1) — 4-state Sync Architecture
+// Inputs from v22.2 above:
+//   cpInputsWired, cpAlignedLong, cpAlignedShort     (lines 32-34)
+//   equilibriumBlockWired, inEquilibriumNoMansLand   (Layer 2 — INDICATOR-2)
+//   gradientOverlapWired, gradientLevelOverlap       (Layer 7 — INDICATOR-5)
+//   pda1_liquiditySweep, pda2_fpfvgProven, pda3_timeAndGradient, allThreePDAs  (Layer 8 — INDICATOR-6)
+//   entryAnchorPrice, entryAnchorType, pdaHierarchyCount    (Layer 9 — INDICATOR-7, NOT a gate)
+//   bodyThroughCEWarning, timeInGapWarning, puppyOnPorchWarning, barcodingWarning, warningCount  (Layer 8 — INDICATOR-8, populates Phase 2/3 placeholders)
+//   pdaCandleCount, pdaTimerStatus, pdaTimeExceeded reassignment  (Layer 8 BONUS — INDICATOR-9; declared downstream of Layer 9 due to dependency on entryWickCEs/entryVIPrice/entryToleranceInPrice from INDICATOR-7)
+// NOTE (INDICATOR-9 ordering fix): Phase 2/3 + syncState assignment have been RELOCATED downstream of the Layer 9 + INDICATOR-9 detection blocks (originally placed after Phase 1 in INDICATOR-1). See "PHASE 2/3 + syncState RELOCATED" marker mid-Region-B for the original location.
+//   allStarsAlignedTP                                  (line 1331)
+//   dualAuthorized                                     (line 1342, kept for v22.2 alerts)
+//   fpfvgDirection, fpfvgComplete, hasFPFVG, fpfvgStep (existing)
+//   liquiditySwept, inEntryWindow, inDeadZone          (existing)
+//   activeDirectionalConflict, tpPendingBlock          (existing)
+//   qualityScoreNormalized, effectiveMinQuality        (existing)
+// Warning placeholders are false until INDICATOR-8 + INDICATOR-9 populate them.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 8 — Model Invalidation Warnings (v23 — INDICATOR-8, Scope L0b: Warnings 1-4)
+// Warning 5 (HTF FVG OPPOSITION) deferred to INDICATOR-10 polish per L0b.
+// Warnings 1-4 use existing TP variables — no new request.security calls.
+// L1a: shared priceInsideFPFVG_postStep3 predicate (gates on fpfvgStep >= 3).
+// L2a: BODY THROUGH CE is sticky; clears on new FPFVG OR manual operator override.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── L2 escape hatch (operator-required mitigation) ───
+manualClearBodyThroughCE = input.bool(false, "Manual Clear: Body Through CE Sticky Flag", group="Layer 8 — Invalidation Warnings", tooltip="Flip true to clear sticky BODY THROUGH CE warning if reset logic fails. Flip back to false after clearing.")
+
+// ─── Shared FPFVG-state predicates ───
+bool priceInsideFPFVG_postStep3 = hasFPFVG and fpfvgStep >= 3 and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+bool priceInsideFPFVG_any       = hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+
+// ─── Helper: pairwise candle overlap percentage (for BARCODING) ───
+calculateBarOverlap(float h1, float l1, float h2, float l2) =>
+    float overlapHigh = math.min(h1, h2)
+    float overlapLow  = math.max(l1, l2)
+    float overlap     = overlapHigh - overlapLow
+    float range1      = h1 - l1
+    float range2      = h2 - l2
+    float avgRange    = (range1 + range2) / 2
+    avgRange > 0 ? math.max(0, overlap / avgRange) : 0
+
+// ─── Warning 2: BODY THROUGH CE (L2a sticky + manual clear escape hatch) ───
+float ceLevel = not na(fpfvgTop) and not na(fpfvgBottom) ? (fpfvgTop + fpfvgBottom) / 2 : na
+var bool bodyThroughCEInvalidated = false
+
+// Reset on new FPFVG formation (edge), no FPFVG, or manual operator clear
+if (hasFPFVG and not hasFPFVG[1]) or not hasFPFVG or manualClearBodyThroughCE
+    bodyThroughCEInvalidated := false
+
+// Set sticky on body close through CE to wrong half
+if hasFPFVG and not na(ceLevel) and ((fpfvgDirection == "BULLISH" and close < ceLevel) or (fpfvgDirection == "BEARISH" and close > ceLevel))
+    bodyThroughCEInvalidated := true
+
+bool bodyThroughCEWarning = bodyThroughCEInvalidated
+
+// ─── Warning 1: TIME IN GAP (4+ consecutive bars inside post-Step 3) ───
+var int barsInsideFPFVG = 0
+if priceInsideFPFVG_postStep3
+    barsInsideFPFVG := barsInsideFPFVG + 1
+else
+    barsInsideFPFVG := 0
+bool timeInGapWarning = barsInsideFPFVG >= 4
+
+// ─── Warning 3: PUPPY ON PORCH (exit + return within 2 bars) ───
+var int barsOutsideFPFVG = 0
+var bool exitedFPFVG = false
+bool puppyOnPorchWarning = false
+
+// Reset on new FPFVG formation
+if hasFPFVG and not hasFPFVG[1]
+    exitedFPFVG := false
+    barsOutsideFPFVG := 0
+
+// Detect exit edge (was inside last bar, not inside this bar)
+if priceInsideFPFVG_any[1] and not priceInsideFPFVG_any and not exitedFPFVG
+    exitedFPFVG := true
+    barsOutsideFPFVG := 0
+
+if exitedFPFVG
+    if priceInsideFPFVG_any
+        // Returned — fire if within 2 bars of exit
+        puppyOnPorchWarning := barsOutsideFPFVG <= 2
+        exitedFPFVG := false
+        barsOutsideFPFVG := 0
+    else
+        barsOutsideFPFVG := barsOutsideFPFVG + 1
+        // Confirmed displacement — clear flag, no warning
+        if barsOutsideFPFVG >= 5
+            exitedFPFVG := false
+
+// ─── Warning 4: BARCODING (3 consecutive bars inside FPFVG with 70%+ pairwise overlap) ───
+float barcodeOverlap_0_1 = calculateBarOverlap(high[0], low[0], high[1], low[1])
+float barcodeOverlap_1_2 = calculateBarOverlap(high[1], low[1], high[2], low[2])
+float barcodeMaxOverlap  = math.max(barcodeOverlap_0_1, barcodeOverlap_1_2)
+bool barcodingWarning    = priceInsideFPFVG_postStep3 and priceInsideFPFVG_postStep3[1] and priceInsideFPFVG_postStep3[2] and barcodeOverlap_0_1 >= 0.70 and barcodeOverlap_1_2 >= 0.70
+
+// ─── Aggregate warning count ───
+int warningCount = (bodyThroughCEWarning ? 1 : 0) + (timeInGapWarning ? 1 : 0) + (puppyOnPorchWarning ? 1 : 0) + (barcodingWarning ? 1 : 0)
+
+// ─── Compose into Region B placeholder slots (replaces INDICATOR-1 false defaults) ───
+bool warningStructural   = bodyThroughCEWarning
+bool warningTimeBased    = timeInGapWarning or puppyOnPorchWarning or barcodingWarning
+bool warningHTFOpposing  = false  // Warning 5 → INDICATOR-10 polish (deferred per L0b)
+bool pdaTimeExceeded     = false  // PDA Time Counter ≥ 5         → INDICATOR-9
+
+// ─── Composite booleans (asymmetry-fix oracle per D2 — consume CP signal) ───
+bool cpAgreesLong  = cpAlignedLong  and fpfvgDirection == "BULLISH"
+bool cpAgreesShort = cpAlignedShort and fpfvgDirection == "BEARISH"
+bool cpAgrees      = cpAgreesLong or cpAgreesShort
+bool setupForming  = liquiditySwept or hasFPFVG or fpfvgComplete
+
+string tradeDir = fpfvgDirection == "BULLISH" ? "LONG" : fpfvgDirection == "BEARISH" ? "SHORT" : "—"
+
+// ─── LAYER 8 — Three PDAs Required (v23 — INDICATOR-6, J3a explicit gate) ───
+// J3a INDICATOR-6: explicit 3-PDA gate
+// Logically redundant with allStarsAlignedTP + INDICATOR-5 gradient gate under
+// Universal interpretation. Defense in depth: future checkpoints may refactor
+// upstream gates; this gate catches divergence.
+// PDA #3 graceful degrades when gradient input unwired (matches INDICATOR-5 pattern).
+bool pda1_liquiditySweep   = liquiditySwept
+bool pda2_fpfvgProven      = hasFPFVG and fpfvgStep >= 3
+bool pda3_timeAndGradient  = inEntryWindow and (not gradientOverlapWired or gradientLevelOverlap)
+int  pdaCount              = (pda1_liquiditySweep ? 1 : 0) + (pda2_fpfvgProven ? 1 : 0) + (pda3_timeAndGradient ? 1 : 0)
+bool allThreePDAs          = pda1_liquiditySweep and pda2_fpfvgProven and pda3_timeAndGradient
+
+// ─── PHASE 1: base state from positive conditions (priority order) ───
+// D11b: WAIT-branch preserves v22.2 statusMsg chain specificity for diagnostic richness.
+string baseState  = "WAIT"
+string baseReason = ""
+
+if not cpInputsWired
+    baseState  := "WAIT"
+    baseReason := "CP inputs not wired"
+else if equilibriumBlockWired and inEquilibriumNoMansLand
+    baseState  := "WAIT"
+    baseReason := "⛔ Equilibrium No-Man's-Land — FVGs unreliable"
+else if allStarsAlignedTP and cpAgrees
+    if gradientOverlapWired and not gradientLevelOverlap
+        baseState  := "WATCH"
+        baseReason := "⏳ TP+CP aligned — no gradient overlap (waiting for retest at gradient level)"
+    else if not allThreePDAs
+        baseState  := "WATCH"
+        baseReason := "⏳ TP+CP aligned — missing PDA " + (not pda1_liquiditySweep ? "#1 (Sweep)" : not pda2_fpfvgProven ? "#2 (FPFVG Step3)" : "#3 (Time+Grad)")
+    else
+        baseState  := "ENTER"
+        baseReason := "🚨 ENTER NOW — " + tradeDir + " — PRESS THE BUTTON"
+else if allStarsAlignedTP and not cpAgrees
+    baseState  := "WATCH"
+    baseReason := "⏳ TP Authorized — Waiting for CP agreement"
+else if setupForming
+    baseState  := "SETUP BUILDING"
+    baseReason := fpfvgComplete ? "✅ FPFVG complete — entry valid NOW (Step 4/4)" : hasFPFVG ? "⏳ FPFVG forming — Step " + str.tostring(fpfvgStep) + "/4" : "⚙ Sweep complete — Step " + str.tostring(fpfvgStep) + "/4"
+else
+    baseState  := "WAIT"
+    baseReason := activeDirectionalConflict ? "⚠ W.Bias vs Narrative conflict — no trade" : tpPendingBlock ? "⚠ Pending liq — sweep first" : inDeadZone ? "⛔ Dead zone active — no trades" : not inEntryWindow ? "⏳ Outside session hours" : qualityScoreNormalized < effectiveMinQuality ? "⚠ Score too low — need " + str.tostring(effectiveMinQuality) + "+" : not liquiditySwept ? "❌ No liquidity sweep yet — pass on session" : "👁 Watching for setup"
+
+// ─── PHASE 2/3 + syncState RELOCATED (v23 — INDICATOR-9 ordering fix) ───
+// Phase 2 (hard-kill) + Phase 3 (demotion) + syncState/statusText assignment have
+// been moved DOWNSTREAM of Layer 9 (INDICATOR-7) + INDICATOR-9 PDA Time Counter
+// detection blocks so that all warning sources are evaluated BEFORE Phase 2/3
+// reads them. See block after pdaHierarchyCount line below.
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 9 — PDA Hierarchy when overlapping (v23 — INDICATOR-7, Scope B)
+// Precision aid: when multiple PDA types overlap at FPFVG, identify highest-
+// priority type (Wick > FVG > VI per K1a). NOT a hard gate — display + plot
+// only per K6c. Existing entryPrice unchanged.
+// DRIFT SURFACE: wick threshold (30%) and proximity tolerance mirror INDICATOR-5
+// CP gradient logic. If INDICATOR-10 polish changes either, update BOTH places.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── K2a: Wick CE detection (mirror INDICATOR-5 logic, 30% threshold) ───
+[d1HEntry, d1LEntry, d1OEntry, d1CEntry] = request.security(syminfo.tickerid, "1D", [high[1], low[1], open[1], close[1]], lookahead=barmerge.lookahead_off)
+[d2HEntry, d2LEntry, d2OEntry, d2CEntry] = request.security(syminfo.tickerid, "1D", [high[2], low[2], open[2], close[2]], lookahead=barmerge.lookahead_off)
+[d3HEntry, d3LEntry, d3OEntry, d3CEntry] = request.security(syminfo.tickerid, "1D", [high[3], low[3], open[3], close[3]], lookahead=barmerge.lookahead_off)
+[d4HEntry, d4LEntry, d4OEntry, d4CEntry] = request.security(syminfo.tickerid, "1D", [high[4], low[4], open[4], close[4]], lookahead=barmerge.lookahead_off)
+[d5HEntry, d5LEntry, d5OEntry, d5CEntry] = request.security(syminfo.tickerid, "1D", [high[5], low[5], open[5], close[5]], lookahead=barmerge.lookahead_off)
+
+addEntryWickCE(float dH, float dL, float dO, float dC, array<float> arr) =>
+    float dRange = dH - dL
+    float bodyTop = math.max(dO, dC)
+    float bodyBot = math.min(dO, dC)
+    float upperWickLen = dH - bodyTop
+    float lowerWickLen = bodyBot - dL
+    if dRange > 0 and upperWickLen / dRange >= 0.30
+        array.push(arr, (dH + bodyTop) / 2)
+    if dRange > 0 and lowerWickLen / dRange >= 0.30
+        array.push(arr, (dL + bodyBot) / 2)
+
+var array<float> entryWickCEs = array.new<float>(0)
+array.clear(entryWickCEs)
+addEntryWickCE(d1HEntry, d1LEntry, d1OEntry, d1CEntry, entryWickCEs)
+addEntryWickCE(d2HEntry, d2LEntry, d2OEntry, d2CEntry, entryWickCEs)
+addEntryWickCE(d3HEntry, d3LEntry, d3OEntry, d3CEntry, entryWickCEs)
+addEntryWickCE(d4HEntry, d4LEntry, d4OEntry, d4CEntry, entryWickCEs)
+addEntryWickCE(d5HEntry, d5LEntry, d5OEntry, d5CEntry, entryWickCEs)
+
+// ─── Per-instrument tolerance (mirror INDICATOR-5 K3a auto-detect, no override) ───
+int entryToleranceTicks = instrument == "MGC" ? 5 : instrument == "MNQ" ? 10 : instrument == "MES" ? 5 : instrument == "MCL" ? 5 : instrument == "EURUSD" or instrument == "GBPUSD" or instrument == "EURJPY" or instrument == "USDJPY" ? 5 : 5
+float entryToleranceInPrice = entryToleranceTicks * syminfo.mintick
+
+// ─── K3: Volume Imbalance detection (2-candle non-overlap, 20-bar lookback) ───
+float entryVIPrice = na
+string entryVIType = ""
+
+if hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom)
+    for i = 0 to 19
+        if low[i] > high[i + 1]
+            float viMid = (low[i] + high[i + 1]) / 2
+            if math.abs(viMid - fpfvgTop) <= entryToleranceInPrice or math.abs(viMid - fpfvgBottom) <= entryToleranceInPrice
+                entryVIPrice := viMid
+                entryVIType := "Bullish VI"
+                break
+        if high[i] < low[i + 1]
+            float viMid = (high[i] + low[i + 1]) / 2
+            if math.abs(viMid - fpfvgTop) <= entryToleranceInPrice or math.abs(viMid - fpfvgBottom) <= entryToleranceInPrice
+                entryVIPrice := viMid
+                entryVIType := "Bearish VI"
+                break
+
+// ─── PDA hierarchy selection (Wick > FVG > VI per K1a) ───
+bool hasWickPDA = false
+float wickPDAPrice = na
+bool hasFVGPDA = false
+float fvgPDAPrice = na
+bool hasVIPDA = not na(entryVIPrice)
+
+if hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom)
+    // Procedural lesson #4 (preemptive — CP v23 hit RE10045 on identical pattern at INDICATOR-11):
+    // empty-init array + push-only growth → MUST wrap iteration in size guard.
+    if array.size(entryWickCEs) > 0
+        for i = 0 to array.size(entryWickCEs) - 1
+            float wickCE = array.get(entryWickCEs, i)
+            if not na(wickCE)
+                if math.abs(wickCE - fpfvgTop) <= entryToleranceInPrice or math.abs(wickCE - fpfvgBottom) <= entryToleranceInPrice
+                    hasWickPDA := true
+                    wickPDAPrice := wickCE
+                    break
+    hasFVGPDA := true
+    fvgPDAPrice := (fpfvgTop + fpfvgBottom) / 2
+
+float entryAnchorPrice = na
+string entryAnchorType = ""
+
+if hasWickPDA
+    entryAnchorPrice := wickPDAPrice
+    entryAnchorType := "Wick CE"
+else if hasFVGPDA
+    entryAnchorPrice := fvgPDAPrice
+    entryAnchorType := "FVG midpoint"
+else if hasVIPDA
+    entryAnchorPrice := entryVIPrice
+    entryAnchorType := entryVIType
+
+int pdaHierarchyCount = (hasWickPDA ? 1 : 0) + (hasFVGPDA ? 1 : 0) + (hasVIPDA ? 1 : 0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 8 BONUS — PDA Time Counter (v23 — INDICATOR-9, Apr 23 Trader Roundup)
+// Hard kill at 5+ candles inside any tracked PDA. Per ICT: "Beyond 5 = excessive,
+// probabilities shift exponentially against you."
+// M0b scope: tracks FPFVG zone + wick CE proximity + VI proximity (uses
+// entryToleranceInPrice from INDICATOR-7 Layer 9 block immediately above).
+// M3b reset: counter resets when price exits all PDAs OR new FPFVG forms.
+// Reassigns pdaTimeExceeded placeholder declared in Layer 8 composer at line ~1465.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Detect price inside any tracked PDA (M0b: FPFVG zone OR wick CE proximity OR VI proximity) ───
+bool priceInsideFPFVG_pdaTimer = hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+
+bool priceNearWickPDA = false
+if array.size(entryWickCEs) > 0
+    for i = 0 to array.size(entryWickCEs) - 1
+        float wickCE = array.get(entryWickCEs, i)
+        if not na(wickCE) and math.abs(close - wickCE) <= entryToleranceInPrice
+            priceNearWickPDA := true
+            break
+
+bool priceNearVIPDA = not na(entryVIPrice) and math.abs(close - entryVIPrice) <= entryToleranceInPrice
+
+bool priceInsideAnyPDA = priceInsideFPFVG_pdaTimer or priceNearWickPDA or priceNearVIPDA
+
+// ─── PDA candle counter (M3b: reset on price exit OR new FPFVG edge) ───
+var int pdaCandleCount = 0
+
+if hasFPFVG and not hasFPFVG[1]
+    pdaCandleCount := 0
+
+if priceInsideAnyPDA
+    pdaCandleCount := pdaCandleCount + 1
+else
+    pdaCandleCount := 0
+
+string pdaTimerStatus = pdaCandleCount <= 3 ? "GREEN" : pdaCandleCount == 4 ? "YELLOW" : "RED"
+
+// ─── Reassign INDICATOR-1 placeholder (declared at line ~1465 as false; INDICATOR-9 fills) ───
+pdaTimeExceeded := pdaCandleCount >= 5
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 2/3 + syncState (v23 — relocated by INDICATOR-9 ordering fix from line ~1518)
+// All warning sources now detected (Layer 8 from INDICATOR-8 + PDA Time Counter
+// from INDICATOR-9). Phase 2/3 reads complete warning state and applies
+// hard-kill / demotion in priority order.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── PHASE 2: hard-kill warnings override base state ───
+string finalState  = baseState
+string finalReason = baseReason
+
+if pdaTimeExceeded
+    finalState  := "WAIT"
+    finalReason := "PDA Time Exceeded (cut bait)"
+
+if warningStructural
+    finalState  := "WAIT"
+    finalReason := "Body through CE (model invalidated)"
+
+// ─── PHASE 3: demotion warnings downgrade active state ───
+if finalState == "ENTER" and (warningTimeBased or warningHTFOpposing)
+    finalState  := "WATCH"
+    finalReason := "⚠ ENTER REVOKED — warning active"
+
+if finalState == "WATCH" and warningTimeBased
+    finalState  := "SETUP BUILDING"
+    finalReason := "⚠ Demoted from WATCH — time-based warning"
+
+// ─── Persist as named state (table cell renders this) ───
+var string syncState  = "WAIT"
+var string statusText = "WAIT — Initialization"
+
+syncState  := finalState
+statusText := finalState + " — " + finalReason
+
+// ─── Entry Anchor plot for EFL consumption (placed after Layer 9 block per pine v6 forward-ref rules) ───
+plot(entryAnchorPrice, title="Entry Anchor Price", display=display.data_window, color=color.new(color.aqua, 100))
 
 if showDashboard
-    table tp = table.new(position.bottom_left, 3, 14, bgcolor=color.new(color.black, 15), border_color=color.new(color.gray, 60), border_width=1)
+    // Procedural lesson #5: row count must match actual `r += 1` increments.
+    // v22.2 baseline = 14. v23 added 4 rows: INDICATOR-6 (3 PDAs) + INDICATOR-7 (ENTRY ANCHOR)
+    // + INDICATOR-8 (WARNINGS) + INDICATOR-9 (PDA TIMER) = 18 actual rows. +2 buffer = 20.
+    // RE10040 caught at INDICATOR-11 chart application (bar 2395, row 14 out of bounds).
+    table tp = table.new(position.bottom_left, 3, 20, bgcolor=color.new(color.black, 15), border_color=color.new(color.gray, 60), border_width=1)
     int r = 0
 
     table.cell(tp, 0, r, "TRADE PLAN", text_color=color.lime, text_size=size.normal, bgcolor=color.new(color.black, 30))
@@ -1462,56 +1815,67 @@ if showDashboard
         table.cell(tp, 2, r, not na(r2) ? str.tostring(math.round(r2, 1)) + "R" : "", text_color=color.new(color.lime, 20), text_size=size.tiny)
         r += 1
 
-    string statusMsg = ""
-    color  statusCol = color.gray
-    if dualAuthorized
-        statusMsg := "🚨  ALL STARS ALIGNED — PRESS THE BUTTON"
-        statusCol := color.white
-    else if allStarsAlignedTP
-        statusMsg := cpInputsWired ? "⏳  TP Authorized — Waiting for CP agreement" : "⏳  TP Authorized — CP inputs not wired"
-        statusCol := color.yellow
-    else if activeDirectionalConflict
-        statusMsg := "⚠  W.Bias vs Narrative conflict — no trade"
-        statusCol := color.orange
-    else if tpPendingBlock
-        string pendingDir = fpfvgDirection == "BULLISH" ? "Sellside below" : "Buyside above"
-        string pendingLvl = fpfvgDirection == "BULLISH" and not na(tpSellLevel) ? " @ " + str.tostring(tpSellLevel, format.mintick) : fpfvgDirection == "BEARISH" and not na(tpBuyLevel) ? " @ " + str.tostring(tpBuyLevel, format.mintick) : ""
-        statusMsg := "⚠  Pending liq: " + pendingDir + pendingLvl + " — sweep first"
-        statusCol := color.orange
-    else if not liquiditySwept
-        statusMsg := "❌  No liquidity sweep yet — pass on session"
-        statusCol := color.red
-    else if inDeadZone
-        statusMsg := "⛔  Dead zone active — no trades"
-        statusCol := color.red
-    else if not inEntryWindow
-        statusMsg := "⏳  Outside session hours"
-        statusCol := color.orange
-    else if qualityScoreNormalized < effectiveMinQuality
-        statusMsg := "⚠  Score too low — need " + str.tostring(effectiveMinQuality) + "+"
-        statusCol := color.orange
-    else if fpfvgComplete
-        statusMsg := "✅  FPFVG complete — entry valid NOW"
-        statusCol := color.lime
-    else if hasFPFVG
-        statusMsg := "⏳  FPFVG forming — wait for all 4 steps"
-        statusCol := color.yellow
-    else
-        statusMsg := "👁  Watching for setup"
-        statusCol := color.gray
-
-    // ─── DUAL-INDICATOR SYNC ROW (v22.2) ───
-    string cpTag = not cpInputsWired  ? "CP: — (wire inputs)" : cpAlignedLong ? "CP: ✓ Long (" + str.tostring(cpScoreInt) + "/10)" : cpAlignedShort ? "CP: ✓ Short (" + str.tostring(cpScoreInt) + "/10)" : "CP: – (" + str.tostring(cpScoreInt) + "/10)"
-    string tpTag = allStarsAlignedTP  ? "TP: ✓ Aligned (" + str.tostring(qualityScoreNormalized) + "/10)" : "TP: " + str.tostring(qualityScoreNormalized) + "/" + str.tostring(effectiveMinQuality)
-    string verdict = dualAuthorized ? "→ ENTER" : "→ WAIT"
-    color  syncBg  = dualAuthorized ? color.new(color.green, 10) : cpInputsWired and (cpAlignedLong or cpAlignedShort or allStarsAlignedTP) ? color.new(color.yellow, 70) : color.new(color.gray, 85)
-    table.cell(tp, 0, r, "SYNC:", text_color=color.white, text_size=size.tiny, bgcolor=syncBg)
-    table.cell(tp, 1, r, cpTag + "  ·  " + tpTag + "  " + verdict, text_color=color.white, text_size=size.small, bgcolor=syncBg)
-    table.cell(tp, 2, r, dualAuthorized ? "🚨" : "", text_color=color.white, text_size=size.small, bgcolor=syncBg)
+    // ─── LAYER 8 — Three PDAs row (v23 — INDICATOR-6) ───
+    string pda1Mark = pda1_liquiditySweep ? "✓ Sweep"     : "✗ Sweep"
+    string pda2Mark = pda2_fpfvgProven    ? "✓ FPFVG[3]"  : "✗ FPFVG[3]"
+    string pda3Mark = pda3_timeAndGradient ? "✓ Time+Grad" : "✗ Time+Grad"
+    string pdaText  = pdaCount == 0 ? "— — —" : pda1Mark + "  " + pda2Mark + "  " + pda3Mark
+    string pdaCountText = pdaCount == 3 ? "3/3 ✅ AUTHORIZED" : str.tostring(pdaCount) + "/3"
+    color  pdaFg    = pdaCount == 3 ? color.lime : pdaCount == 2 ? color.yellow : color.gray
+    table.cell(tp, 0, r, "3 PDAs:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, pdaText, text_color=pdaFg, text_size=size.tiny)
+    table.cell(tp, 2, r, pdaCountText, text_color=pdaFg, text_size=size.tiny)
     r += 1
 
-    color statusBg = dualAuthorized ? color.new(color.green, 0) : color.new(color.black, 100)
+    // ─── LAYER 9 — Entry Anchor row (v23 — INDICATOR-7) ───
+    string anchorTypeLabel = na(entryAnchorPrice) ? "—" : entryAnchorType
+    string anchorPriceLabel = na(entryAnchorPrice) ? "—" : str.tostring(entryAnchorPrice, format.mintick)
+    string anchorHierarchyLabel = pdaHierarchyCount == 0 ? "" : pdaHierarchyCount == 1 ? "(single)" : pdaHierarchyCount == 2 ? "(2 overlap)" : "(3 overlap — high confluence)"
+    color anchorFg = na(entryAnchorPrice) ? color.gray : pdaHierarchyCount >= 2 ? color.lime : color.yellow
+    table.cell(tp, 0, r, "ENTRY ANCHOR:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, anchorTypeLabel + " @ " + anchorPriceLabel, text_color=anchorFg, text_size=size.tiny)
+    table.cell(tp, 2, r, anchorHierarchyLabel, text_color=anchorFg, text_size=size.tiny)
+    r += 1
+
+    // ─── LAYER 8 — Active Warnings row (v23 — INDICATOR-8) ───
+    string warningList = ""
+    if bodyThroughCEWarning
+        warningList := warningList + "⛔ BODY-THRU-CE  "
+    if timeInGapWarning
+        warningList := warningList + "⚠ Time-in-Gap (" + str.tostring(barsInsideFPFVG) + "b)  "
+    if puppyOnPorchWarning
+        warningList := warningList + "⚠ Puppy-on-Porch  "
+    if barcodingWarning
+        warningList := warningList + "⚠ Barcoding (" + str.tostring(math.round(barcodeMaxOverlap * 100)) + "%)  "
+    string warningCellText = warningList == "" ? "None" : warningList
+    color warningFg = bodyThroughCEWarning ? color.red : (timeInGapWarning or puppyOnPorchWarning or barcodingWarning) ? color.orange : color.gray
+    table.cell(tp, 0, r, "WARNINGS:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, warningCellText, text_color=warningFg, text_size=size.tiny)
+    table.cell(tp, 2, r, str.tostring(warningCount) + "/4", text_color=warningFg, text_size=size.tiny)
+    r += 1
+
+    // ─── LAYER 8 BONUS — PDA Time Counter row (v23 — INDICATOR-9) ───
+    string pdaTimerBars = (pdaCandleCount >= 1 ? "▓" : "░") + (pdaCandleCount >= 2 ? "▓" : "░") + (pdaCandleCount >= 3 ? "▓" : "░") + (pdaCandleCount >= 4 ? "▓" : "░") + (pdaCandleCount >= 5 ? "▓" : "░")
+    color pdaTimerFg = pdaTimerStatus == "GREEN" ? color.lime : pdaTimerStatus == "YELLOW" ? color.yellow : color.red
+    string pdaTimerCellText = pdaCandleCount == 0 ? "no PDA contact" : pdaTimerBars + " " + str.tostring(pdaCandleCount) + "/5 " + pdaTimerStatus
+    table.cell(tp, 0, r, "PDA TIMER:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, pdaTimerCellText, text_color=pdaTimerFg, text_size=size.tiny)
+    table.cell(tp, 2, r, pdaTimeExceeded ? "⛔ EXCEEDED" : "", text_color=pdaTimerFg, text_size=size.tiny)
+    r += 1
+
+    // ─── DUAL-INDICATOR SYNC ROW (v22.2 → v23: verdict word bound to state machine) ───
+    string cpTag = not cpInputsWired  ? "CP: — (wire inputs)" : cpAlignedLong ? "CP: ✓ Long (" + str.tostring(cpScoreInt) + "/10)" : cpAlignedShort ? "CP: ✓ Short (" + str.tostring(cpScoreInt) + "/10)" : "CP: – (" + str.tostring(cpScoreInt) + "/10)"
+    string tpTag = allStarsAlignedTP  ? "TP: ✓ Aligned (" + str.tostring(qualityScoreNormalized) + "/10)" : "TP: " + str.tostring(qualityScoreNormalized) + "/" + str.tostring(effectiveMinQuality)
+    string verdict = "→ " + syncState
+    color  syncBg  = syncState == "ENTER" ? color.new(color.green, 10) : cpInputsWired and (cpAlignedLong or cpAlignedShort or allStarsAlignedTP) ? color.new(color.yellow, 70) : color.new(color.gray, 85)
+    table.cell(tp, 0, r, "SYNC:", text_color=color.white, text_size=size.tiny, bgcolor=syncBg)
+    table.cell(tp, 1, r, cpTag + "  ·  " + tpTag + "  " + verdict, text_color=color.white, text_size=size.small, bgcolor=syncBg)
+    table.cell(tp, 2, r, syncState == "ENTER" ? "🚨" : "", text_color=color.white, text_size=size.small, bgcolor=syncBg)
+    r += 1
+
+    color statusFg = syncState == "ENTER" ? color.white : syncState == "WATCH" ? color.orange : syncState == "SETUP BUILDING" ? color.yellow : color.gray
+    color statusBg = syncState == "ENTER" ? color.new(color.green, 0) : color.new(color.black, 100)
     table.cell(tp, 0, r, "STATUS:", text_color=color.white, text_size=size.tiny, bgcolor=statusBg)
-    table.cell(tp, 1, r, statusMsg, text_color=statusCol, text_size=size.small, bgcolor=statusBg)
-    table.cell(tp, 2, r, dualAuthorized ? "✅" : "", text_color=color.white, text_size=size.small, bgcolor=statusBg)
+    table.cell(tp, 1, r, statusText, text_color=statusFg, text_size=size.small, bgcolor=statusBg)
+    table.cell(tp, 2, r, syncState == "ENTER" ? "✅" : "", text_color=color.white, text_size=size.small, bgcolor=statusBg)
     r += 1
