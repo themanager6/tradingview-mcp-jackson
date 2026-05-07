@@ -330,6 +330,326 @@ export async function updateMessage({ alert_id, new_message }) {
   return { success: false, action: 'failed', alert_id, error: res.error || 'unknown failure', detail: res, items_count: itemsCount };
 }
 
+/**
+ * Update the webhook URL on an existing alert subscription.
+ *
+ * Pre-condition: TV Alerts panel must be open in the right widget bar so
+ * the virtual list is mounted (same as updateMessage).
+ *
+ * Idempotent: if the alert's current webhook URL already equals new_url AND
+ * the webhook toggle is enabled, returns action="skipped" with
+ * reason="already_set" and DOES NOT overwrite (cancels both modal + dialog
+ * cleanly without saving).
+ *
+ * Handles:
+ *   - Webhook toggle OFF (common case for first-time enable): clicks the
+ *     toggle checkbox, polls 25ms × 20 = 500ms for the URL input to become
+ *     enabled, then sets the value.
+ *   - Webhook toggle ON with different URL: just overwrites the value.
+ *   - Webhook toggle ON with same URL: skipped (idempotency).
+ *
+ * Save flow: modal "Apply" → returns to outer create-edit dialog → outer
+ * "Save" persists the change to TV's alert subscription store. If the outer
+ * Save click does not close the dialog within ~2s, returns
+ * action="failed" with error="outer_save_failed_after_modal_apply" — the
+ * bulk caller logs and re-runs from the failure log; idempotency makes
+ * re-runs safe regardless of whether the slow Save actually persisted.
+ *
+ * @param {Object} args
+ * @param {number} args.alert_id - TV alert subscription id (from alert_list)
+ * @param {string} args.new_url - New webhook URL (must include scheme)
+ * @returns {Promise<Object>} { success, action: "updated"|"skipped"|"failed", alert_id, ... }
+ */
+export async function updateWebhookUrl({ alert_id, new_url }) {
+  if (typeof alert_id !== 'number' || !Number.isFinite(alert_id)) {
+    return { success: false, error: 'alert_id must be a finite number', alert_id };
+  }
+  if (typeof new_url !== 'string' || new_url.length === 0) {
+    return { success: false, error: 'new_url must be a non-empty string', alert_id };
+  }
+  if (!/^https?:\/\//i.test(new_url)) {
+    return { success: false, error: 'new_url must start with http:// or https://', alert_id };
+  }
+
+  // Step A: stash items + callbacks (mirror updateMessage).
+  const stashRes = await evaluate(`
+    (function stash() {
+      const desc = document.querySelector('[data-name="alert-item-description"]');
+      if (!desc) return { error: 'no alert-item-description — open the Alerts panel first' };
+      const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+      if (!fk) return { error: 'no react fiber on description' };
+      let walker = desc[fk];
+      for (let d = 0; d < 30; d++) {
+        if (!walker) break;
+        const mp = walker.memoizedProps;
+        if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+          window.__efCallbacks = mp.itemData.callbacks;
+          window.__efItems = mp.itemData.items;
+          return { stashed: true, items_count: mp.itemData.items.length };
+        }
+        walker = walker.return;
+      }
+      return { error: 'virtual list not found' };
+    })()
+  `);
+  if (!stashRes || stashRes.error) {
+    return { success: false, error: stashRes?.error || 'stash failed', alert_id };
+  }
+
+  // Step B: defensively clear search filter (same as updateMessage).
+  const clearRes = await evaluate(`
+    (function clearSearch() {
+      const search = document.querySelector('input[type="search"], input[placeholder*="earch" i]');
+      if (!search) return { cleared: false };
+      const before = search.value;
+      if (before === '') return { was_empty: true };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      search.dispatchEvent(new Event('change', { bubbles: true }));
+      return { cleared: true, before_value: before };
+    })()
+  `);
+  let itemsCount = stashRes.items_count;
+  if (clearRes?.cleared && clearRes.before_value) {
+    const restash = await evaluateAsync(`
+      (async function restash() {
+        await new Promise(r => setTimeout(r, 800));
+        const desc = document.querySelector('[data-name="alert-item-description"]');
+        if (!desc) return { error: 'no description after restash' };
+        const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+        let walker = desc[fk];
+        for (let d = 0; d < 30; d++) {
+          if (!walker) break;
+          const mp = walker.memoizedProps;
+          if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+            window.__efCallbacks = mp.itemData.callbacks;
+            window.__efItems = mp.itemData.items;
+            return { restashed: true, items_count: mp.itemData.items.length };
+          }
+          walker = walker.return;
+        }
+        return { error: 'virtual list not found after restash' };
+      })()
+    `);
+    if (!restash || restash.error) {
+      return { success: false, error: 'restash after search-clear failed: ' + (restash?.error || ''), alert_id };
+    }
+    itemsCount = restash.items_count;
+  }
+
+  // Step C: per-alert update sequence.
+  const newUrlEscaped = JSON.stringify(new_url);
+  const updateExpr = `
+    (async function updateOne() {
+      const items = window.__efItems;
+      const callbacks = window.__efCallbacks;
+      if (!items || !callbacks) return { error: 'stash missing' };
+
+      const idx = items.findIndex(it => it.id === ${alert_id});
+      if (idx < 0) return { error: 'alert_id not found in items', alert_id: ${alert_id}, items_total: items.length };
+
+      // Helper: cancel any open modal then any open dialog. Used on every
+      // failure path so a stuck UI doesn't poison the next call.
+      async function cleanCancel() {
+        const modal = document.querySelector('[data-qa-id="alerts-notifications-edit-dialog"]');
+        if (modal && modal.offsetWidth) {
+          const c = modal.querySelector('[data-qa-id="cancel"]');
+          if (c) {
+            const pk = Object.keys(c).find(k => k.startsWith('__reactProps$'));
+            if (pk && c[pk].onClick) c[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: c, target: c, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const m = document.querySelector('[data-qa-id="alerts-notifications-edit-dialog"]');
+            if (!m || !m.offsetWidth) break;
+          }
+        }
+        const dlg = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (dlg && dlg.offsetWidth) {
+          const c = dlg.querySelector('[data-qa-id="cancel"]');
+          if (c) {
+            const pk = Object.keys(c).find(k => k.startsWith('__reactProps$'));
+            if (pk && c[pk].onClick) c[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: c, target: c, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const d = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+            if (!d || !d.offsetWidth) break;
+          }
+        }
+      }
+
+      // 1. Open the outer create-edit dialog.
+      callbacks.onEditButtonClick(idx);
+      let dialog = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        dialog = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (dialog && dialog.offsetWidth) break;
+      }
+      if (!dialog || !dialog.offsetWidth) return { error: 'dialog did not appear', alert_id: ${alert_id} };
+
+      // 2. Click the notifications fieldset's button to open the modal.
+      const notifBtn = dialog.querySelector('[data-qa-id="alert-notifications-button"]');
+      if (!notifBtn) { await cleanCancel(); return { error: 'no alert-notifications-button', alert_id: ${alert_id} }; }
+      const notifPK = Object.keys(notifBtn).find(k => k.startsWith('__reactProps$'));
+      if (!notifPK || !notifBtn[notifPK].onClick) { await cleanCancel(); return { error: 'no onClick on alert-notifications-button', alert_id: ${alert_id} }; }
+      notifBtn[notifPK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: notifBtn, target: notifBtn, nativeEvent: {} });
+
+      // 3. Wait for the notifications modal to render.
+      let modal = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        modal = document.querySelector('[data-qa-id="alerts-notifications-edit-dialog"]');
+        if (modal && modal.offsetWidth) break;
+      }
+      if (!modal || !modal.offsetWidth) { await cleanCancel(); return { error: 'notifications modal did not appear', alert_id: ${alert_id} }; }
+
+      // 4. Read current webhook state.
+      const urlInput = modal.querySelector('[data-qa-id="ui-lib-Input-input webhook-input-input"]');
+      if (!urlInput) { await cleanCancel(); return { error: 'webhook URL input not found in modal', alert_id: ${alert_id} }; }
+      const oldUrl = urlInput.value || '';
+      const wasDisabled = !!urlInput.disabled;
+
+      // 5. Idempotency check: if URL matches AND toggle is on (input enabled),
+      //    cancel both layers and return skipped.
+      const newUrl = ${newUrlEscaped};
+      if (oldUrl === newUrl && !wasDisabled) {
+        await cleanCancel();
+        return { skipped: true, reason: 'already_set', alert_id: ${alert_id}, current_url: oldUrl };
+      }
+
+      // 6. If toggle OFF, flip via native checked-setter + dispatch real DOM
+      //    events. Mirrors the URL <input> pattern below — bypasses React's
+      //    value-tracker dedup so the controlled-input state actually advances.
+      let toggleWasEnabled = false;
+      if (wasDisabled) {
+        const checkbox = modal.querySelector('label[data-qa-id="webhook"] input[data-qa-id="ui-lib-checkbox-input-input"]')
+                      || modal.querySelector('[data-qa-id="webhook"] [data-qa-id="ui-lib-checkbox-input-input"]');
+        if (!checkbox) { await cleanCancel(); return { error: 'webhook toggle checkbox not found', alert_id: ${alert_id} }; }
+        const checkedSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'checked').set;
+        checkedSetter.call(checkbox, true);
+        checkbox.dispatchEvent(new Event('click', { bubbles: true }));
+        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        toggleWasEnabled = true;
+        // Diagnostic reads on checkbox.checked: distinguish silent click
+        // failure (checked stays false) from slow React re-render (checked
+        // flips true but input.disabled lags).
+        const checkboxCheckedAfterClick = !!checkbox.checked;
+        await new Promise(r => setTimeout(r, 100));
+        const checkboxCheckedAfter100ms = !!checkbox.checked;
+        await new Promise(r => setTimeout(r, 200));
+        const checkboxCheckedAfter300ms = !!checkbox.checked;
+        // Give React one extra tick before polling input state.
+        await new Promise(r => setTimeout(r, 50));
+        // Poll 25ms × 20 = 500ms for input to become enabled.
+        let enabled = false;
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 25));
+          if (!urlInput.disabled) { enabled = true; break; }
+        }
+        if (!enabled) {
+          await cleanCancel();
+          return {
+            error: 'toggle_enabled_but_input_still_disabled',
+            alert_id: ${alert_id},
+            checkbox_checked_after_click: checkboxCheckedAfterClick,
+            checkbox_checked_after_100ms: checkboxCheckedAfter100ms,
+            checkbox_checked_after_300ms: checkboxCheckedAfter300ms,
+            input_disabled_after_500ms: !!urlInput.disabled,
+            input_value_after_500ms: urlInput.value || '',
+          };
+        }
+      }
+
+      // 7. Set the URL value via native setter + dispatch input/change.
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(urlInput, newUrl);
+      urlInput.dispatchEvent(new Event('input', { bubbles: true }));
+      urlInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      if (urlInput.value !== newUrl) {
+        await cleanCancel();
+        return { error: 'url value did not stick', alert_id: ${alert_id}, observed_value: urlInput.value };
+      }
+
+      // 8. Click modal's Apply.
+      const apply = modal.querySelector('[data-qa-id="submit"]');
+      if (!apply) { await cleanCancel(); return { error: 'no submit (apply) in notifications modal', alert_id: ${alert_id} }; }
+      const applyPK = Object.keys(apply).find(k => k.startsWith('__reactProps$'));
+      if (!applyPK || !apply[applyPK].onClick) { await cleanCancel(); return { error: 'no onClick on apply', alert_id: ${alert_id} }; }
+      apply[applyPK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: apply, target: apply, nativeEvent: {} });
+
+      // 9. Wait for modal to close.
+      let modalClosed = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        const stillModal = document.querySelector('[data-qa-id="alerts-notifications-edit-dialog"]');
+        if (!stillModal || !stillModal.offsetWidth) { modalClosed = true; break; }
+      }
+      if (!modalClosed) {
+        await cleanCancel();
+        return { error: 'notifications modal did not close after apply', alert_id: ${alert_id} };
+      }
+
+      // 10. Click outer dialog's Save.
+      await new Promise(r => setTimeout(r, 100));
+      const dialogAfter = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+      if (!dialogAfter || !dialogAfter.offsetWidth) {
+        return { error: 'outer dialog vanished after modal apply', alert_id: ${alert_id} };
+      }
+      const save = dialogAfter.querySelector('[data-qa-id="submit"]');
+      if (!save) { await cleanCancel(); return { error: 'no save button in outer dialog', alert_id: ${alert_id} }; }
+      const saveText = (save.textContent || '').trim();
+      if (saveText !== 'Save') { await cleanCancel(); return { error: 'outer submit text is not Save', alert_id: ${alert_id}, save_text: saveText }; }
+      const savePK = Object.keys(save).find(k => k.startsWith('__reactProps$'));
+      if (!savePK || !save[savePK].onClick) { await cleanCancel(); return { error: 'no onClick on save', alert_id: ${alert_id} }; }
+      save[savePK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: save, target: save, nativeEvent: {} });
+
+      // 11. Wait for outer dialog to close. If it doesn't close within ~2s,
+      //     report inconsistent-state failure (modal apply succeeded but
+      //     persistence didn't finish). Caller's failure log + idempotent
+      //     re-run handle this safely.
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        const still = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (!still || !still.offsetWidth) {
+          return {
+            updated: true,
+            alert_id: ${alert_id},
+            old_url: oldUrl,
+            new_url: newUrl,
+            toggle_was_enabled: toggleWasEnabled,
+          };
+        }
+      }
+      return { error: 'outer_save_failed_after_modal_apply', alert_id: ${alert_id}, modal_applied: true };
+    })()
+  `;
+
+  const res = await evaluateAsync(updateExpr);
+
+  if (!res) {
+    return { success: false, error: 'no result from update sequence', alert_id };
+  }
+  if (res.skipped) {
+    return { success: true, action: 'skipped', alert_id, reason: res.reason, current_url: res.current_url, items_count: itemsCount };
+  }
+  if (res.updated) {
+    return {
+      success: true,
+      action: 'updated',
+      alert_id,
+      old_url: res.old_url,
+      new_url: res.new_url,
+      toggle_was_enabled: res.toggle_was_enabled,
+      items_count: itemsCount,
+    };
+  }
+  return { success: false, action: 'failed', alert_id, error: res.error || 'unknown failure', detail: res, items_count: itemsCount };
+}
+
 export async function deleteAlerts({ delete_all }) {
   if (delete_all) {
     const result = await evaluate(`

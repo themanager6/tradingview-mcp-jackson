@@ -31,4 +31,12 @@ export function registerAlertTools(server) {
     try { return jsonResult(await core.updateMessage({ alert_id, new_message })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
+
+  server.tool('alert_update_webhook_url', 'Update the webhook URL on an existing alert subscription. Idempotent: skips if current URL already matches new_url AND webhook toggle is enabled. Handles toggle-off state by enabling webhook checkbox first (polls 500ms for input to become enabled). Pre-condition: TV Alerts panel must be open in the right widget bar.', {
+    alert_id: z.coerce.number().describe('TV alert subscription id (from alert_list)'),
+    new_url: z.string().describe('New webhook URL. Must include scheme (http:// or https://).'),
+  }, async ({ alert_id, new_url }) => {
+    try { return jsonResult(await core.updateWebhookUrl({ alert_id, new_url })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
 }
