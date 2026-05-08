@@ -23,6 +23,7 @@
 //   node phase4d_bulk_alert_delete.cjs --ids-from <file.txt>     # one id per line, # comments OK
 //   node phase4d_bulk_alert_delete.cjs --resume-from <log>       # skip already-deleted
 //   node phase4d_bulk_alert_delete.cjs --chunk-size 30           # idle 5min after every N attempts
+//   node phase4d_bulk_alert_delete.cjs --force                   # bypass items_count >= 100 pre-flight
 //   node phase4d_bulk_alert_delete.cjs                           # SAFE DEFAULT: errors with no input
 //
 // SAFETY: this script will NOT delete anything without explicit alert_id input
@@ -55,6 +56,12 @@ const resumeIdx = args.indexOf('--resume-from');
 const resumeFrom = resumeIdx >= 0 ? args[resumeIdx + 1] : null;
 const chunkIdx = args.indexOf('--chunk-size');
 const chunkSize = chunkIdx >= 0 ? parseInt(args[chunkIdx + 1], 10) : null;
+// --force: bypass the items_count >= 100 pre-flight. Use ONLY when you've
+// intentionally reduced the alive alert count (e.g., mid-bulk-delete the
+// count has dropped below 100 and you want to continue). Without this
+// flag, the runner aborts to guard against accidental runs on a filtered
+// panel showing a small subset of alerts.
+const forceFlag = args.includes('--force');
 
 // Build target list — REQUIRED for safety. No "delete everything" default.
 let targetIds = [];
@@ -261,9 +268,13 @@ function buildDeleteExpr(alertId, expectedMessage) {
     }
     deleteBtn[deletePK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: deleteBtn, target: deleteBtn, nativeEvent: {} });
 
+    // Poll: 120 × 50ms = 6000ms (was 1500ms). Bumped per
+    // feedback_ui_vs_cloud_persistence_lag.md — TV's UI can lag well past
+    // 1.5s even when the delete itself has landed in cloud. Better to wait
+    // 6s here than false-fail and re-try a delete that already succeeded.
     let confirmModal = null;
     let dialogClosedDirectly = false;
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 120; i++) {
       await new Promise(r => setTimeout(r, 50));
       confirmModal = document.querySelector('[data-qa-id="confirm-dialog"]') ||
         document.querySelector('[data-name="alert-delete-confirm"]') ||
@@ -323,7 +334,7 @@ function buildDeleteExpr(alertId, expectedMessage) {
       return { error: 'main dialog did not close after confirm click', alert_id: ${alertId}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
     }
     await cleanCancel();
-    return { error: 'no confirm modal and dialog did not close within 1500ms', alert_id: ${alertId} };
+    return { error: 'no confirm modal and dialog did not close within 6000ms', alert_id: ${alertId} };
   })()`;
 }
 
@@ -375,8 +386,9 @@ async function main() {
     itemsCount = re.items_count;
     console.log(`Search-clear:  cleared=${JSON.stringify(clr.before_value)}; restash items_count=${itemsCount}`);
   }
-  if (itemsCount < 100) {
-    console.error(`items_count=${itemsCount} too low — DOM filter still active. Aborting.`);
+  if (itemsCount < 100 && !forceFlag) {
+    console.error(`items_count=${itemsCount} too low (< 100) — DOM filter may be active. Aborting.`);
+    console.error('If you have intentionally reduced the alive count (e.g., mid-delete batch), pass --force to bypass.');
     console.error('Resolve filter (chart-scope toggle, filter chip, etc.) per project_phase4e_dom_filter_blocker.md');
     ws.close(); process.exit(1);
   }

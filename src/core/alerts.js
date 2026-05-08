@@ -1008,10 +1008,12 @@ export async function deleteAlert({ alert_id }) {
       deleteBtn[deletePK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: deleteBtn, target: deleteBtn, nativeEvent: {} });
 
       // 6. Poll for either (a) confirm modal appearing, or (b) dialog closing directly.
-      //    Whichever fires within 1500ms determines next step.
+      //    120 × 50ms = 6000ms window (bumped from 1500ms per
+      //    feedback_ui_vs_cloud_persistence_lag.md — TV UI can lag well past
+      //    1.5s even when the delete has already landed in cloud).
       let confirmModal = null;
       let dialogClosedDirectly = false;
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 120; i++) {
         await new Promise(r => setTimeout(r, 50));
         // Check for confirm modal — try common qa-ids first, then heuristic dialog scan
         confirmModal = document.querySelector('[data-qa-id="confirm-dialog"]') ||
@@ -1097,7 +1099,7 @@ export async function deleteAlert({ alert_id }) {
 
       // 7c. Neither modal nor close — timeout.
       await cleanCancel();
-      return { error: 'no confirm modal and dialog did not close within 1500ms', alert_id: ${alert_id} };
+      return { error: 'no confirm modal and dialog did not close within 6000ms', alert_id: ${alert_id} };
     })()
   `;
 
