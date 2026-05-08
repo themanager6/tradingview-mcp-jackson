@@ -4,3 +4,51 @@ scripts/current.pine
 temp_*
 *.log
 discovery-log.json
+logs/indicator_state/*.jsonl
+logs/indicator_state/.logger.pid
+
+# Local one-shot generation/probe/transform scripts (output committed
+# separately when needed; the scripts themselves are session-scratch).
+.gen_*.cjs
+.transform_*.cjs
+.probe_*.cjs
+.extract_*.cjs
+.fix_encoding.cjs
+.read_monaco.cjs
+.inject_*.cjs
+.verify_*.cjs
+
+# Pine source injection / encoding scratchpads (raw payloads,
+# base64-encoded dumps, escaped-string intermediates).
+.cp_inject_*.json
+.tp_inject_*.json
+.tp_for_inject.js
+.swing_inject_*
+.inject_src.json
+.pine_inject.txt
+.pine_src_payload.json
+.src_escaped.json
+.tp_src_string.json
+.swing_b64.txt
+.cp_fixed_src.txt
+.tp_fixed_src.txt
+.editor_*.pine
+.tp_chunk_*.json
+
+# Pine-source backups (timestamped from prior phase deployments).
+# .pine.bak.* — never want these in git status; recovery is via git history.
+*.pine.bak.*
+
+# Per-phase apply/patch scripts (one-shot, archived in commit history).
+apply_*.cjs
+apply_*.js
+patch_*.cjs
+bump_to_*.cjs
+add_*_to_chart.cjs
+
+# Top-level operator scratch.
+clip_clean.ps1
+inject_*.cjs
+inject_*.js
+fix_*.js
+get_*_src.js
