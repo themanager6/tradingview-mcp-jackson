@@ -379,7 +379,17 @@ function buildUpdateExpr(alertId, newMessage, forceOverwrite, expectedOldMessage
         return { updated: true, alert_id: ${alertId}, old_message: oldMessage.substring(0, 250), new_message: newMsg, ui_path: usingModal ? 'modal' : 'inline', forced: ${fo} };
       }
     }
-    return { error: 'dialog did not close after save', alert_id: ${alertId} };
+    // Timeout — REST verify (per feedback_ui_vs_cloud_persistence_lag.md)
+    try {
+      const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+      if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+        const a = restCheck.r.find(x => x.alert_id === ${alertId});
+        if (a && (a.message || '') === newMsg) {
+          return { updated: true, alert_id: ${alertId}, old_message: oldMessage.substring(0, 250), new_message: newMsg, ui_path: usingModal ? 'modal' : 'inline', forced: ${fo}, confirmation_path: 'delayed_no_visual_confirm', note: 'dialog did not close but REST verified message updated' };
+        }
+      }
+    } catch (e) { /* fall through */ }
+    return { error: 'dialog did not close after save (REST shows message unchanged)', alert_id: ${alertId} };
   })()`;
 }
 

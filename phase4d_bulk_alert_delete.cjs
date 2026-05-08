@@ -331,10 +331,32 @@ function buildDeleteExpr(alertId, expectedMessage) {
           return { deleted: true, alert_id: ${alertId}, confirmation_path: 'modal_confirmed', observed_preview: observedMessage.substring(0, 100) };
         }
       }
-      return { error: 'main dialog did not close after confirm click', alert_id: ${alertId}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
+      // Timeout — REST verify (per feedback_ui_vs_cloud_persistence_lag.md)
+      try {
+        const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+        if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+          const stillExists = restCheck.r.some(a => a.alert_id === ${alertId});
+          if (!stillExists) {
+            await cleanCancel();
+            return { deleted: true, alert_id: ${alertId}, confirmation_path: 'delayed_no_visual_confirm', observed_preview: observedMessage.substring(0, 100), note: 'dialog did not close in 6s after confirm but REST verified deleted' };
+          }
+        }
+      } catch (e) { /* fall through */ }
+      return { error: 'main dialog did not close after confirm click and alert still in REST', alert_id: ${alertId}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
     }
+    // Neither confirm modal nor direct close. REST verify in case delete landed.
+    try {
+      const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+      if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+        const stillExists = restCheck.r.some(a => a.alert_id === ${alertId});
+        if (!stillExists) {
+          await cleanCancel();
+          return { deleted: true, alert_id: ${alertId}, confirmation_path: 'delayed_no_visual_confirm', observed_preview: observedMessage.substring(0, 100), note: 'no confirm modal seen and dialog did not close, but REST verified deleted' };
+        }
+      }
+    } catch (e) { /* fall through */ }
     await cleanCancel();
-    return { error: 'no confirm modal and dialog did not close within 6000ms', alert_id: ${alertId} };
+    return { error: 'no confirm modal and dialog did not close within 6000ms (REST shows alert still alive)', alert_id: ${alertId} };
   })()`;
 }
 

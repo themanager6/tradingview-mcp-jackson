@@ -373,7 +373,26 @@ export async function updateMessage({ alert_id, new_message, force_overwrite = f
           return { updated: true, alert_id: ${alert_id}, old_message: oldMessage.substring(0, 250), new_message: newMsg, ui_path: usingModal ? 'modal' : 'inline' };
         }
       }
-      return { error: 'dialog did not close after save', alert_id: ${alert_id}, ui_path: usingModal ? 'modal' : 'inline' };
+      // Timeout — but UI may have lagged past 2s while save actually landed
+      // (per feedback_ui_vs_cloud_persistence_lag.md). Verify via REST.
+      try {
+        const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+        if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+          const a = restCheck.r.find(x => x.alert_id === ${alert_id});
+          if (a && (a.message || '') === newMsg) {
+            return {
+              updated: true,
+              alert_id: ${alert_id},
+              old_message: oldMessage.substring(0, 250),
+              new_message: newMsg,
+              ui_path: usingModal ? 'modal' : 'inline',
+              confirmation_path: 'delayed_no_visual_confirm',
+              note: 'dialog did not close in 2s but REST verified message updated',
+            };
+          }
+        }
+      } catch (e) { /* fall through to failure */ }
+      return { error: 'dialog did not close after save (REST shows message unchanged)', alert_id: ${alert_id}, ui_path: usingModal ? 'modal' : 'inline' };
     })()
   `;
 
@@ -1094,12 +1113,48 @@ export async function deleteAlert({ alert_id }) {
             };
           }
         }
-        return { error: 'main dialog did not close after confirm click', alert_id: ${alert_id}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
+        // Timeout — but TV's UI may lag past our window even when the delete
+        // has landed in cloud (per feedback_ui_vs_cloud_persistence_lag.md).
+        // Verify via REST: if alert is gone, the delete succeeded.
+        try {
+          const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+          if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+            const stillExists = restCheck.r.some(a => a.alert_id === ${alert_id});
+            if (!stillExists) {
+              await cleanCancel();
+              return {
+                deleted: true,
+                alert_id: ${alert_id},
+                confirmation_path: 'delayed_no_visual_confirm',
+                observed_preview: observedMessage.substring(0, 100),
+                note: 'dialog did not close in 6s after confirm click, but REST verified alert deleted',
+              };
+            }
+          }
+        } catch (e) { /* fall through to failure */ }
+        return { error: 'main dialog did not close after confirm click and alert still in REST', alert_id: ${alert_id}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
       }
 
       // 7c. Neither modal nor close — timeout.
+      // REST verify: in case delete landed despite no visual signal.
+      try {
+        const restCheck = await fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' }).then(r => r.json());
+        if (restCheck && restCheck.s === 'ok' && Array.isArray(restCheck.r)) {
+          const stillExists = restCheck.r.some(a => a.alert_id === ${alert_id});
+          if (!stillExists) {
+            await cleanCancel();
+            return {
+              deleted: true,
+              alert_id: ${alert_id},
+              confirmation_path: 'delayed_no_visual_confirm',
+              observed_preview: observedMessage.substring(0, 100),
+              note: 'no confirm modal seen and dialog did not close, but REST verified alert deleted',
+            };
+          }
+        }
+      } catch (e) { /* fall through to failure */ }
       await cleanCancel();
-      return { error: 'no confirm modal and dialog did not close within 6000ms', alert_id: ${alert_id} };
+      return { error: 'no confirm modal and dialog did not close within 6000ms (REST shows alert still alive)', alert_id: ${alert_id} };
     })()
   `;
 
