@@ -121,7 +121,7 @@ export async function list() {
  * @param {string} args.new_message - New message string (placeholders like {{ticker}} preserved)
  * @returns {Promise<Object>} { success, alert_id, action: "updated"|"skipped"|"failed", ... }
  */
-export async function updateMessage({ alert_id, new_message }) {
+export async function updateMessage({ alert_id, new_message, force_overwrite = false }) {
   if (typeof alert_id !== 'number' || !Number.isFinite(alert_id)) {
     return { success: false, error: 'alert_id must be a finite number', alert_id };
   }
@@ -223,8 +223,9 @@ export async function updateMessage({ alert_id, new_message }) {
       if (!msgBtn) return { error: 'no alert-message-button', alert_id: ${alert_id} };
       const oldMessage = (msgBtn.getAttribute('data-overflow-tooltip-html') || msgBtn.textContent || '').trim();
 
-      // Idempotency: skip if already JSON
-      if (oldMessage.startsWith('{')) {
+      // Idempotency: skip if already JSON. Bypassed when force_overwrite=true
+      // (e.g. Phase 4d adding signal_kind to existing JSON alerts).
+      if (oldMessage.startsWith('{') && !${force_overwrite}) {
         const cancel = dialog.querySelector('[data-qa-id="cancel"]');
         if (cancel) {
           const pk = Object.keys(cancel).find(k => k.startsWith('__reactProps$'));
@@ -325,7 +326,7 @@ export async function updateMessage({ alert_id, new_message }) {
     return { success: true, action: 'skipped', alert_id, reason: res.reason, current_message_preview: res.current_message_preview, items_count: itemsCount };
   }
   if (res.updated) {
-    return { success: true, action: 'updated', alert_id, old_message: res.old_message, new_message: res.new_message, ui_path: res.ui_path, items_count: itemsCount };
+    return { success: true, action: 'updated', alert_id, old_message: res.old_message, new_message: res.new_message, ui_path: res.ui_path, items_count: itemsCount, forced: !!force_overwrite };
   }
   return { success: false, action: 'failed', alert_id, error: res.error || 'unknown failure', detail: res, items_count: itemsCount };
 }
@@ -666,5 +667,352 @@ export async function deleteAlerts({ delete_all }) {
     `);
     return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
   }
-  throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
+  throw new Error('Individual alert deletion not yet supported. Use deleteAlert({ alert_id }) for per-alert delete, or delete_all: true for bulk-with-context-menu.');
+}
+
+/**
+ * Delete a single alert subscription by alert_id.
+ *
+ * Pre-condition: TV Alerts panel must be open in the right widget bar.
+ *
+ * Idempotent: if alert_id is not in TV's REST list, returns
+ * action="not_found" (already in target end state for delete).
+ *
+ * Verification: opens the dialog, reads the message-button content, compares
+ * against the REST-fetched expected message body. Aborts if mismatched —
+ * guards against the items[]-index-vs-callback-target drift surfaced during
+ * 2026-05-08 probe (callbacks.onEditButtonClick(idx) sometimes opens a
+ * different alert than items[idx] suggests, possibly due to dialog content
+ * rendering lazily or items[] reordering). Mismatched dialog → cleanCancel
+ * + return action="failed" with error="dialog_content_mismatch".
+ *
+ * Confirmation modal: TV may or may not show "Are you sure?" after delete
+ * click. The IIFE polls for either (a) a confirm modal appearing, or (b)
+ * the create-edit-dialog closing directly, whichever fires first within
+ * 1.5s. If (a), clicks the modal's confirm button; if (b), treats as
+ * direct-no-confirm. Returns confirmation_path field for observability.
+ *
+ * @param {Object} args
+ * @param {number} args.alert_id - TV alert subscription id (from alert_list)
+ * @returns {Promise<Object>} { success, action: "deleted"|"not_found"|"failed", alert_id, ... }
+ */
+export async function deleteAlert({ alert_id }) {
+  if (typeof alert_id !== 'number' || !Number.isFinite(alert_id)) {
+    return { success: false, error: 'alert_id must be a finite number', alert_id };
+  }
+
+  // Step A: REST pre-fetch — idempotency check + capture expected message for verification.
+  const restRes = await evaluateAsync(`
+    fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.s !== 'ok' || !Array.isArray(d.r)) return { error: d.errmsg || 'unexpected response' };
+        const a = d.r.find(x => x.alert_id === ${alert_id});
+        return a ? { found: true, message: a.message || '', alert_id: a.alert_id } : { found: false };
+      })
+      .catch(e => ({ error: e.message }))
+  `);
+  if (!restRes || restRes.error) {
+    return { success: false, error: 'REST pre-fetch failed: ' + (restRes?.error || 'no result'), alert_id };
+  }
+  if (!restRes.found) {
+    return { success: true, action: 'not_found', alert_id, note: 'alert not in REST list — already deleted (idempotent success)' };
+  }
+  const expectedMessage = (restRes.message || '').trim();
+
+  // Step B: stash items + callbacks (mirror updateMessage).
+  const stashRes = await evaluate(`
+    (function stash() {
+      const desc = document.querySelector('[data-name="alert-item-description"]');
+      if (!desc) return { error: 'no alert-item-description — open the Alerts panel first' };
+      const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+      if (!fk) return { error: 'no react fiber on description' };
+      let walker = desc[fk];
+      for (let d = 0; d < 30; d++) {
+        if (!walker) break;
+        const mp = walker.memoizedProps;
+        if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+          window.__efCallbacks = mp.itemData.callbacks;
+          window.__efItems = mp.itemData.items;
+          return { stashed: true, items_count: mp.itemData.items.length };
+        }
+        walker = walker.return;
+      }
+      return { error: 'virtual list not found' };
+    })()
+  `);
+  if (!stashRes || stashRes.error) {
+    return { success: false, error: stashRes?.error || 'stash failed', alert_id };
+  }
+
+  // Step C: defensively clear search filter (same pattern as updateMessage).
+  const clearRes = await evaluate(`
+    (function clearSearch() {
+      const search = document.querySelector('input[type="search"], input[placeholder*="earch" i]');
+      if (!search) return { cleared: false };
+      const before = search.value;
+      if (before === '') return { was_empty: true };
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(search, '');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      search.dispatchEvent(new Event('change', { bubbles: true }));
+      return { cleared: true, before_value: before };
+    })()
+  `);
+  let itemsCount = stashRes.items_count;
+  if (clearRes?.cleared && clearRes.before_value) {
+    const restash = await evaluateAsync(`
+      (async function restash() {
+        await new Promise(r => setTimeout(r, 800));
+        const desc = document.querySelector('[data-name="alert-item-description"]');
+        if (!desc) return { error: 'no description after restash' };
+        const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
+        let walker = desc[fk];
+        for (let d = 0; d < 30; d++) {
+          if (!walker) break;
+          const mp = walker.memoizedProps;
+          if (mp && mp.itemCount && mp.itemData && Array.isArray(mp.itemData.items)) {
+            window.__efCallbacks = mp.itemData.callbacks;
+            window.__efItems = mp.itemData.items;
+            return { restashed: true, items_count: mp.itemData.items.length };
+          }
+          walker = walker.return;
+        }
+        return { error: 'virtual list not found after restash' };
+      })()
+    `);
+    if (!restash || restash.error) {
+      return { success: false, error: 'restash after search-clear failed: ' + (restash?.error || ''), alert_id };
+    }
+    itemsCount = restash.items_count;
+  }
+
+  // Step D: per-alert delete IIFE.
+  const expectedMessageEsc = JSON.stringify(expectedMessage);
+  const deleteExpr = `
+    (async function deleteOne() {
+      const items = window.__efItems;
+      const callbacks = window.__efCallbacks;
+      if (!items || !callbacks) return { error: 'stash missing' };
+
+      const idx = items.findIndex(it => it.id === ${alert_id});
+      if (idx < 0) return { error: 'items_drift_alert_not_in_items', alert_id: ${alert_id}, items_total: items.length };
+
+      // Force-close any stuck dialog from a prior iteration.
+      async function cleanStuckDialog() {
+        const stuckEditor = document.querySelector('[data-qa-id="alerts-message-edit-dialog"]');
+        if (stuckEditor && stuckEditor.offsetWidth) {
+          const c = stuckEditor.querySelector('[data-qa-id="cancel"]');
+          if (c) {
+            const pk = Object.keys(c).find(k => k.startsWith('__reactProps$'));
+            if (pk && c[pk].onClick) c[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: c, target: c, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const m = document.querySelector('[data-qa-id="alerts-message-edit-dialog"]');
+            if (!m || !m.offsetWidth) break;
+          }
+        }
+        const stuckDialog = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (stuckDialog && stuckDialog.offsetWidth) {
+          const c = stuckDialog.querySelector('[data-qa-id="cancel"]');
+          if (c) {
+            const pk = Object.keys(c).find(k => k.startsWith('__reactProps$'));
+            if (pk && c[pk].onClick) c[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: c, target: c, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const d = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+            if (!d || !d.offsetWidth) break;
+          }
+        }
+      }
+      await cleanStuckDialog();
+
+      // Helper used in failure paths to leave UI clean.
+      async function cleanCancel() {
+        const dlg = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (dlg && dlg.offsetWidth) {
+          const c = dlg.querySelector('[data-qa-id="cancel"]');
+          if (c) {
+            const pk = Object.keys(c).find(k => k.startsWith('__reactProps$'));
+            if (pk && c[pk].onClick) c[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: c, target: c, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const d = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+            if (!d || !d.offsetWidth) break;
+          }
+        }
+      }
+
+      // 1. Open the dialog.
+      callbacks.onEditButtonClick(idx);
+      let dialog = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        dialog = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (dialog && dialog.offsetWidth) break;
+      }
+      if (!dialog || !dialog.offsetWidth) return { error: 'dialog did not appear', alert_id: ${alert_id} };
+
+      // 2. Wait for content to fully load — TV may use 2-stage render where
+      //    the dialog template appears before alert data swaps in.
+      await new Promise(r => setTimeout(r, 200));
+
+      // 3. VERIFY dialog content matches the alert we expected. Read the
+      //    message-button. Prefer textContent over data-overflow-tooltip-html
+      //    for direct comparison without HTML-entity decoding.
+      const msgBtn = dialog.querySelector('[data-qa-id="alert-message-button"]');
+      if (!msgBtn) { await cleanCancel(); return { error: 'no alert-message-button in dialog', alert_id: ${alert_id} }; }
+      const observedMessage = (msgBtn.textContent || '').trim();
+      const expected = ${expectedMessageEsc};
+      // Match: full-text equality OR observed is a prefix of expected (truncated display)
+      // OR expected is a prefix of observed. Use first 60 chars to catch v22.3 LONG vs
+      // SHORT distinction (direction field at ~position 80).
+      const matchLen = Math.min(observedMessage.length, expected.length, 80);
+      const matched = matchLen > 0 && (
+        observedMessage === expected ||
+        observedMessage.substring(0, matchLen) === expected.substring(0, matchLen)
+      );
+      if (!matched) {
+        await cleanCancel();
+        return {
+          error: 'dialog_content_mismatch',
+          alert_id: ${alert_id},
+          expected_preview: expected.substring(0, 100),
+          observed_preview: observedMessage.substring(0, 100),
+          observed_len: observedMessage.length,
+          expected_len: expected.length,
+        };
+      }
+
+      // 4. Find the delete button.
+      const deleteBtn = dialog.querySelector('[data-qa-id="delete"]');
+      if (!deleteBtn) { await cleanCancel(); return { error: 'no [data-qa-id=delete] button in dialog', alert_id: ${alert_id} }; }
+      const deletePK = Object.keys(deleteBtn).find(k => k.startsWith('__reactProps$'));
+      if (!deletePK || !deleteBtn[deletePK].onClick) {
+        await cleanCancel();
+        return { error: 'no onClick on delete button', alert_id: ${alert_id} };
+      }
+
+      // 5. Click delete.
+      deleteBtn[deletePK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: deleteBtn, target: deleteBtn, nativeEvent: {} });
+
+      // 6. Poll for either (a) confirm modal appearing, or (b) dialog closing directly.
+      //    Whichever fires within 1500ms determines next step.
+      let confirmModal = null;
+      let dialogClosedDirectly = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 50));
+        // Check for confirm modal — try common qa-ids first, then heuristic dialog scan
+        confirmModal = document.querySelector('[data-qa-id="confirm-dialog"]') ||
+          document.querySelector('[data-name="alert-delete-confirm"]') ||
+          (function() {
+            const dialogs = document.querySelectorAll('[role="dialog"], [data-qa-id*="dialog"]');
+            for (const d of dialogs) {
+              if (d === dialog) continue;
+              if (!d.offsetWidth) continue;
+              const txt = (d.textContent || '').toLowerCase();
+              if (/sure|confirm|delete this alert|remove this alert/i.test(txt) && /cancel|no|keep/i.test(txt)) return d;
+            }
+            return null;
+          })();
+        if (confirmModal) break;
+        const stillMain = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+        if (!stillMain || !stillMain.offsetWidth) {
+          dialogClosedDirectly = true;
+          break;
+        }
+      }
+
+      // 7a. Direct-delete path: dialog closed without confirmation.
+      if (dialogClosedDirectly) {
+        return {
+          deleted: true,
+          alert_id: ${alert_id},
+          confirmation_path: 'direct_no_confirm',
+          observed_preview: observedMessage.substring(0, 100),
+        };
+      }
+
+      // 7b. Confirm-modal path: find confirm button + click it.
+      if (confirmModal) {
+        const confirmCandidates = [
+          confirmModal.querySelector('[data-qa-id="confirm"]'),
+          confirmModal.querySelector('[data-qa-id="yes"]'),
+          confirmModal.querySelector('[data-qa-id="submit"]'),
+          confirmModal.querySelector('[data-qa-id="delete"]'),
+        ];
+        let confirmBtn = null;
+        for (const c of confirmCandidates) {
+          if (c && c.offsetWidth) { confirmBtn = c; break; }
+        }
+        if (!confirmBtn) {
+          // Fallback: scan visible buttons for confirm-y text
+          for (const b of confirmModal.querySelectorAll('button')) {
+            if (!b.offsetWidth) continue;
+            const t = (b.textContent || '').trim().toLowerCase();
+            if (/^(yes|confirm|delete|ok|remove)$/.test(t)) { confirmBtn = b; break; }
+          }
+        }
+        if (!confirmBtn) {
+          await cleanCancel();
+          return {
+            error: 'confirm_modal_appeared_but_no_confirm_button',
+            alert_id: ${alert_id},
+            modal_text_preview: (confirmModal.textContent || '').substring(0, 200),
+          };
+        }
+        const confirmPK = Object.keys(confirmBtn).find(k => k.startsWith('__reactProps$'));
+        if (!confirmPK || !confirmBtn[confirmPK].onClick) {
+          await cleanCancel();
+          return { error: 'no onClick on confirm button', alert_id: ${alert_id} };
+        }
+        confirmBtn[confirmPK].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: confirmBtn, target: confirmBtn, nativeEvent: {} });
+
+        // Wait for create-edit-dialog to close (up to 6s — same as save poll for parity).
+        for (let i = 0; i < 120; i++) {
+          await new Promise(r => setTimeout(r, 50));
+          const stillMain = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+          if (!stillMain || !stillMain.offsetWidth) {
+            return {
+              deleted: true,
+              alert_id: ${alert_id},
+              confirmation_path: 'modal_confirmed',
+              observed_preview: observedMessage.substring(0, 100),
+            };
+          }
+        }
+        return { error: 'main dialog did not close after confirm click', alert_id: ${alert_id}, confirmation_path: 'modal_confirmed_but_dialog_stuck' };
+      }
+
+      // 7c. Neither modal nor close — timeout.
+      await cleanCancel();
+      return { error: 'no confirm modal and dialog did not close within 1500ms', alert_id: ${alert_id} };
+    })()
+  `;
+
+  const res = await evaluateAsync(deleteExpr);
+  if (!res) {
+    return { success: false, error: 'no result from delete sequence', alert_id };
+  }
+  if (res.deleted) {
+    return {
+      success: true,
+      action: 'deleted',
+      alert_id,
+      confirmation_path: res.confirmation_path,
+      observed_preview: res.observed_preview,
+      items_count: itemsCount,
+    };
+  }
+  return {
+    success: false,
+    action: 'failed',
+    alert_id,
+    error: res.error || 'unknown failure',
+    detail: res,
+    items_count: itemsCount,
+  };
 }

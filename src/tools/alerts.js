@@ -24,11 +24,12 @@ export function registerAlertTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('alert_update_message', 'Update the message field on an existing alert subscription. Idempotent: skips if current message already starts with "{". Pre-condition: TV Alerts panel must be open in the right widget bar. Handles both inline and modal message-editor UI variants.', {
+  server.tool('alert_update_message', 'Update the message field on an existing alert subscription. Idempotent by default: skips if current message already starts with "{". Pass force_overwrite=true to bypass that guard (e.g. when adding fields to an existing JSON message). Pre-condition: TV Alerts panel must be open in the right widget bar. Handles both inline and modal message-editor UI variants.', {
     alert_id: z.coerce.number().describe('TV alert subscription id (from alert_list)'),
     new_message: z.string().describe('New message string. Pine placeholders like {{ticker}}, {{close}}, {{time}}, {{plot("...")}} are preserved literally.'),
-  }, async ({ alert_id, new_message }) => {
-    try { return jsonResult(await core.updateMessage({ alert_id, new_message })); }
+    force_overwrite: z.boolean().optional().default(false).describe('When true, bypass the "skip if already JSON" idempotency guard. Required for Phase 4d: adding signal_kind to existing JSON alerts. Default false preserves the safe behavior.'),
+  }, async ({ alert_id, new_message, force_overwrite }) => {
+    try { return jsonResult(await core.updateMessage({ alert_id, new_message, force_overwrite })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -37,6 +38,13 @@ export function registerAlertTools(server) {
     new_url: z.string().describe('New webhook URL. Must include scheme (http:// or https://).'),
   }, async ({ alert_id, new_url }) => {
     try { return jsonResult(await core.updateWebhookUrl({ alert_id, new_url })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('alert_delete_one', 'Delete a single alert subscription by alert_id. Idempotent: returns action="not_found" if alert is already gone (REST verified). Verifies dialog content matches expected message before deleting (guards against items[]-vs-callback drift). Handles both confirmation-modal and direct-delete paths. Pre-condition: TV Alerts panel must be open in the right widget bar.', {
+    alert_id: z.coerce.number().describe('TV alert subscription id (from alert_list). Use this for surgical per-alert delete; for sweep-everything use alert_delete with delete_all=true.'),
+  }, async ({ alert_id }) => {
+    try { return jsonResult(await core.deleteAlert({ alert_id })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }
