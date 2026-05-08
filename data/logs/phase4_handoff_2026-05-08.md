@@ -285,3 +285,160 @@ Performed at end of session to clean up token rotation mistake.
 - Health tick after restart should show `schwab_token_expires_in_sec` ~1700+ (full lifetime minus a few seconds for save→load latency)
 
 Tomorrow's verification at session start: read latest log, confirm scanner survived overnight without entering broken-refresh state. Expected: 09:00 ET slot fires normally, runs scan, posts to Discord.
+
+---
+
+## STATE UPDATE — 2026-05-08 ~05:30 UTC (post-incident)
+
+**Alert silence incident (cause + resolution):** TradingView Plus plan expired 2026-05-07. 74/105 alerts auto-stopped with `last_stop_reason="pro_plan_expired"`. Operator renewed plan + deleted alerts down to 97 (under Plus tier 100 cap) + paused/resumed all in TV UI. See `feedback_alert_diagnostic_check_stop_reason_first.md` for the diagnostic procedure (check `last_stop_reason` FIRST before any other notification investigation).
+
+### Current alert count: **97** (was 105)
+
+19 alerts deleted between handoff write and now (operator's manual cleanup to fit Plus 100 cap):
+
+| Symbol | Deleted IDs |
+|---|---|
+| BATS:IWM | 4540173103, 4540172069, 4539602562, 4539600559, 4539598264, 4539597254, 4539596362, 4539591750, 4539589721, 4539586410 (all 10) |
+| BATS:XLV | 4539615974, 4539614577, 4539614040, 4539611644, 4539610737, 4539609503, 4539608896 (7 of 9) |
+| BATS:XLK | 4535370960 (1 of 7) |
+| BATS:XLY | 4540181809 (1 of 2) |
+
+All 19 came from the SWING delete batch. Operator did partial SWING cleanup focused on IWM + XLV.
+
+### Refreshed SWING delete batch — 32 alive (was 51)
+
+| Symbol | Was | Now alive |
+|---|---:|---:|
+| BATS:ELF | 8 | 8 |
+| BATS:IWM | 10 | 0 ✓ all deleted |
+| BATS:MSFT | 8 | 8 |
+| BATS:SMH | 5 | 5 |
+| BATS:XLC | 2 | 2 |
+| BATS:XLK | 7 | 6 |
+| BATS:XLV | 9 | 2 |
+| BATS:XLY | 2 | 1 |
+| **Total** | **51** | **32** |
+
+`.swing_delete_ids.txt` should be regenerated tomorrow before bulk delete run. Always verify each ID still exists via REST `list_alerts` first.
+
+### Phase 4d remaining cleanup — UNCHANGED, all 15 still alive
+
+| Kind | Count | All alive? |
+|---|---:|---|
+| `json_add_signal_kind` | 8 | yes |
+| `text_to_json` | 7 | yes |
+
+### Phase 4e webhook URL update — scope shrinks
+
+Was 65 targets. With 19 SWING deletions (which would have been excluded anyway) + scope re-evaluation, recount required tomorrow. Run `phase4e_preview.cjs` first to surface actual targets from current state.
+
+### TV-native vs webhook architecture (key clarification)
+
+**The historical notification path was TV-native channels** (email/mobile_push/popup), which work WITHOUT webhook URLs. 96 of 97 alerts have NO webhook URL set (`web_hook=""`); only one has a placeholder URL.
+
+**Phase 4e was about ADDING webhook URLs** (for EFL Live Dashboard ingestion via cloudflared → listener), NOT REPAIRING broken ones. The listener has never been receiving production fires — it received only manual smoke tests.
+
+This means:
+- Plan renewal + manual restart = notifications resume immediately via TV-native channels
+- Phase 4e remains a future enhancement (EFL dashboard integration), not a prerequisite for notification recovery
+
+### Active state breakdown post-restart
+
+Of 97 current alerts:
+- `active=true`: 76
+- `active=false`: 21 (not restarted; appear to be ones operator missed during pause/resume cycle, or auto-stopped post-restart)
+
+The 21 still-inactive alerts (operator may want to restart these too):
+```
+4539638413 BATS:SMH    4539636860 BATS:SMH
+4535370489 BATS:XLK    4535370073 BATS:XLK    4535369500 BATS:XLK    4535369345 BATS:XLK
+4514368324 NYMEX:MCL1!  4504641155 NYMEX:MCL1!  4504641039 NYMEX:MCL1!
+4504444476 MGC1!  4504443337 MGC1!  4504375492 MGC1!  4504375419 MGC1!
+4504365347 MNQ1!  4504364933 MNQ1!  4504355904 MNQ1!  4504355524 MNQ1!
+4504351110 MES1!  4504349831 MES1!  4504343505 MES1!  4504343414 MES1!
+```
+
+All 21 have `last_stop_reason="manual"` (historical from pause-all action) and never got resumed.
+
+### Fire monitoring — pipeline verification target
+
+To verify the full notification pipeline post-renewal works end-to-end, monitor alert **`4613854394`** (CME_MINI:MES1!, JSON v23 message, last_fire_time pre-renewal: 2026-05-07T19:45:00Z, active=true, all native notifications enabled).
+
+When it fires next, verify:
+- `last_fire_time` advances to a 2026-05-08 timestamp
+- Operator receives email + mobile push + on-screen popup
+
+If `last_fire_time` doesn't advance even with active futures market: deeper problem (Pine script error, condition no longer triggering, etc.).
+
+### Interceptor cleanup — DONE
+
+All debugging interceptors (WebSocket.send, fetch, XMLHttpRequest open/send/setRequestHeader, navigator.sendBeacon) restored to native via fresh same-origin iframe. Verified by `('' + fn).includes('[native code]')` returning true on all 5. No state persists into tomorrow's session.
+
+### Memory entries (incident learnings)
+
+1. `feedback_alert_diagnostic_check_stop_reason_first.md` (NEW) — diagnostic procedure: check `last_stop_reason` FIRST. MCP `alert_list` shim filters out web_hook + last_stop_reason etc.; use raw REST.
+2. `feedback_alert_notification_silence.md` — UPDATED with RESOLUTION marker.
+3. `feedback_rest_active_field_can_be_stale.md` (NEW) — REST `active` field can lag UI by minutes after pause/resume actions. UI is authoritative. Don't iterate restart based on REST alone.
+
+---
+
+## ITEM 1 — Phase 4 morning prep (completed 2026-05-08 ~05:45 UTC)
+
+### Refreshed lists (committed in working dir; not git-committed yet)
+
+| File | Was | Now | Change |
+|---|---:|---:|---|
+| `.swing_delete_ids.txt` | 51 | **32** | -19 (operator's overnight cleanup) |
+| `.phase4e_target_ids.txt` | 65 | **65** | net 0 count, specific IDs differ (excludes deleted SWINGs that were already excluded by computation, includes Phase 4d-pending) |
+| Phase 4d unmet (15 IDs) | 15 | **15** | unchanged — none deleted |
+
+### SWING delete refresh — per-symbol breakdown (32 alive)
+
+| Symbol | Was | Now alive |
+|---|---:|---:|
+| BATS:ELF | 8 | 8 |
+| BATS:IWM | 10 | **0** ✓ all deleted |
+| BATS:MSFT | 8 | 8 |
+| BATS:SMH | 5 | 5 |
+| BATS:XLC | 2 | 2 |
+| BATS:XLK | 7 | 6 |
+| BATS:XLV | 9 | 2 |
+| BATS:XLY | 2 | 1 |
+| **Total** | **51** | **32** |
+
+Cross-verified two ways: alert_id ∈ original SWING set, AND `panel_version="swing"` in message body. Both methods agree on 32.
+
+### Phase 4d unmet — all 15 still alive ✓
+
+```
+json_add_signal_kind (8): 4504641155, 4504641039, 4504375492, 4504375419,
+                          4504355904, 4504355524, 4504343505, 4504343414
+text_to_json (7):         4504444476, 4504443337, 4504365347, 4504364933,
+                          4504351110, 4504349831, 4514368324
+```
+
+None deleted by operator. Treat tomorrow as planned.
+
+### Phase 4e target list (65 IDs)
+
+97 alive - 32 SWING-still-alive = 65. New file structure:
+- First 15 IDs are Phase 4d-pending (process via Phase 4d FIRST, then Phase 4e for webhook URL)
+- Last 50 IDs are Phase 4e-only (already in valid JSON, just need webhook URL set)
+
+### Important warning for tomorrow's automation
+
+**TV REST `list_alerts.active` field is unreliable.** As of this verification, REST shows 21 alerts with `active=false`, but operator UI screenshot shows all 97 active. UI is authoritative. Tomorrow's tooling MUST NOT skip alerts based on REST `active=false` alone — that filter would incorrectly exclude alerts the engine considers running. Either:
+- Drop the `active=true` filter from preview/runner scripts, OR
+- Cross-reference REST `active` flag against UI manually before excluding any alert
+
+See `feedback_rest_active_field_can_be_stale.md` for full procedure.
+
+### Files ready for tomorrow
+
+- ✅ `.swing_delete_ids.txt` — 32 IDs grouped by symbol
+- ✅ `.phase4e_target_ids.txt` — 65 IDs (15 Phase 4d-pending + 50 Phase 4e-only)
+- ✅ `phase4d_bulk_message_update.cjs` — bulk JSON conversion runner
+- ✅ `phase4d_bulk_alert_delete.cjs` — bulk delete runner with --force flag + 6s confirm-modal poll
+- ✅ `phase4e_preview.cjs` — read-only preview before bulk
+- ✅ `phase4e_bulk_webhook_url_update.cjs` — bulk webhook URL update runner
+- ✅ `phase4f_verify.cjs` — post-update verification probe

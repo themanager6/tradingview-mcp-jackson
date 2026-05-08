@@ -1,90 +1,89 @@
-# Phase 4e webhook URL update target ids (65 alerts)
-# Generated 2026-05-08T03:41:36.182Z from REST list_alerts
-# = alive alerts (105) MINUS SWING-to-delete (40, see .swing_delete_ids.txt)
+# Phase 4e webhook URL update target ids (65 alerts) — REFRESHED 2026-05-08 ~05:30 UTC
+# Was 65 alerts (handoff doc count). Net 0 change in count, but specific IDs differ:
+#   - Removed: 19 SWING IDs that operator deleted overnight
+#   - Removed: alerts that may have moved (none — re-confirmed via REST)
+#   - Net: 97 alive - 32 SWING-still-alive = 65 Phase 4e targets (unchanged count)
+#
+# Includes the 15 Phase 4d "remaining cleanup" alerts (8 json_add_signal_kind + 7 text_to_json) —
+# those still need their respective Phase 4d treatment FIRST, then can have webhook URL set in Phase 4e.
 #
 # Target webhook URL: https://greg-references-fog-zone.trycloudflare.com/alert
 # (cloudflared quick-tunnel running since 2026-05-07 14:23 EDT, PID 2388)
-# Verify URL still active before tomorrow's run via: curl <url>/health
+# Verify URL still active before run: curl <url>/health
+#
+# IMPORTANT: TV REST list_alerts.active field showed 21 alerts as active=false during last verification —
+# operator UI showed all 97 active. UI is authoritative; REST may lag. Don't skip alerts based on REST active=false alone.
+# See feedback_rest_active_field_can_be_stale.md for procedure.
 #
 # Usage: node phase4e_bulk_webhook_url_update.cjs --url https://greg-references-fog-zone.trycloudflare.com/alert --ids-from .phase4e_target_ids.txt --chunk-size 30
 
-# CME_MINI:MES1! (12)
-4504343414
-4504343505
-4504349831
-4504351110
-4552110989
-4552111804
-4579844565
-4579844716
-4613850932
-4613852485
-4613854394
-4613854659
-
-# CME_MINI:MNQ1! (12)
-4504355524
-4504355904
-4504364933
-4504365347
-4552091020
-4552091109
-4579835868
-4579836680
-4613858834
-4613860086
-4613860323
-4613863520
-
-# COMEX_MINI:MGC1! (12)
-4504375419
-4504375492
-4504443337
-4504444476
-4552115016
-4552115645
-4579831798
-4579832280
-4589624894
-4589627392
-4613865361
-4613866901
-
-# NYMEX:MCL1! (5)
-4504641039
+# Phase 4d-pending (15) — process via Phase 4d FIRST, then Phase 4e
+# json_add_signal_kind (8): MNQ MES MGC MCL all_stars_aligned v22.3
 4504641155
+4504641039
+4504375492
+4504375419
+4504355904
+4504355524
+4504343505
+4504343414
+# text_to_json (7): MGC MNQ MES Intraday + MCL Avoid Longs
+4504444476
+4504443337
+4504365347
+4504364933
+4504351110
+4504349831
 4514368324
-4552116876
-4552117345
 
-# OANDA:EURJPY (6)
-4579245543
-4579246540
-4613846323
-4613846789
-4613848041
+# Phase 4e-only (50) — already in JSON v22.3 or v23, just need webhook URL set
+4613866901
+4613865361
+4613863520
+4613860323
+4613860086
+4613858834
+4613854659
+4613854394
+4613852485
+4613850932
 4613848992
-
-# OANDA:EURUSD (6)
-4579243916
-4579244061
-4613841719
-4613842008
-4613843354
+4613848041
+4613846789
+4613846323
 4613844378
-
-# OANDA:GBPUSD (6)
-4579242995
-4579243574
-4613836267
-4613836600
-4613837961
+4613843354
+4613842008
+4613841719
 4613841029
-
-# OANDA:USDJPY (6)
-4579222213
-4579222376
-4613832889
-4613833228
-4613833596
+4613837961
+4613836600
+4613836267
 4613834297
+4613833596
+4613833228
+4613832889
+4589627392
+4589624894
+4579844716
+4579844565
+4579836680
+4579835868
+4579832280
+4579831798
+4579246540
+4579245543
+4579244061
+4579243916
+4579243574
+4579242995
+4579222376
+4579222213
+4552117345
+4552116876
+4552115645
+4552115016
+4552111804
+4552110989
+4552091109
+4552091020
