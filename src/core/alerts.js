@@ -129,6 +129,29 @@ export async function updateMessage({ alert_id, new_message, force_overwrite = f
     return { success: false, error: 'new_message must be a non-empty string', alert_id };
   }
 
+  // Step 0: REST pre-fetch — used for idempotency check (alert exists?) +
+  // dialog-content verification expected value (per
+  // feedback_items_drift_dialog_verification.md memory: callbacks.onEditButtonClick(idx)
+  // doesn't always open the dialog for items[idx], so we MUST verify dialog
+  // content matches the alert we asked for before mutating).
+  const restRes = await evaluateAsync(`
+    fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.s !== 'ok' || !Array.isArray(d.r)) return { error: d.errmsg || 'unexpected response' };
+        const a = d.r.find(x => x.alert_id === ${alert_id});
+        return a ? { found: true, message: a.message || '' } : { found: false };
+      })
+      .catch(e => ({ error: e.message }))
+  `);
+  if (!restRes || restRes.error) {
+    return { success: false, error: 'REST pre-fetch failed: ' + (restRes?.error || 'no result'), alert_id };
+  }
+  if (!restRes.found) {
+    return { success: false, action: 'not_found', alert_id, error: 'alert_id not in REST list', note: 'alert may have been deleted' };
+  }
+  const expectedMessage = (restRes.message || '').trim();
+
   // Step 1: stash items + callbacks from the alerts virtual list.
   const stashRes = await evaluate(`
     (function stash() {
@@ -199,6 +222,7 @@ export async function updateMessage({ alert_id, new_message, force_overwrite = f
 
   // Step 3: run the per-alert update sequence.
   const newMessageEscaped = JSON.stringify(new_message);
+  const expectedMessageEscaped = JSON.stringify(expectedMessage);
   const updateExpr = `
     (async function updateOne() {
       const items = window.__efItems;
@@ -218,9 +242,45 @@ export async function updateMessage({ alert_id, new_message, force_overwrite = f
       }
       if (!dialog || !dialog.offsetWidth) return { error: 'dialog did not appear', alert_id: ${alert_id} };
 
-      // 2. Capture current message
+      // 1.5. Wait briefly for content to fully load + verify dialog is for
+      // the alert we asked for (per feedback_items_drift_dialog_verification.md
+      // memory). callbacks.onEditButtonClick(idx) doesn't always open the
+      // dialog for items[idx] — verify before mutating.
+      await new Promise(r => setTimeout(r, 200));
       const msgBtn = dialog.querySelector('[data-qa-id="alert-message-button"]');
       if (!msgBtn) return { error: 'no alert-message-button', alert_id: ${alert_id} };
+      const oldMessageForVerify = (msgBtn.textContent || '').trim();
+      const expectedFromRest = ${expectedMessageEscaped};
+      {
+        const matchLen = Math.min(oldMessageForVerify.length, expectedFromRest.length, 80);
+        const matched = matchLen > 0 && (
+          oldMessageForVerify === expectedFromRest ||
+          oldMessageForVerify.substring(0, matchLen) === expectedFromRest.substring(0, matchLen)
+        );
+        if (!matched) {
+          const cancel = dialog.querySelector('[data-qa-id="cancel"]');
+          if (cancel) {
+            const pk = Object.keys(cancel).find(k => k.startsWith('__reactProps$'));
+            if (pk && cancel[pk].onClick) cancel[pk].onClick({ preventDefault:()=>{}, stopPropagation:()=>{}, currentTarget: cancel, target: cancel, nativeEvent: {} });
+          }
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 50));
+            const still = document.querySelector('[data-qa-id="alerts-create-edit-dialog"]');
+            if (!still || !still.offsetWidth) break;
+          }
+          return {
+            error: 'dialog_content_mismatch',
+            alert_id: ${alert_id},
+            expected_preview: expectedFromRest.substring(0, 100),
+            observed_preview: oldMessageForVerify.substring(0, 100),
+          };
+        }
+      }
+
+      // 2. Capture current message (for idempotency + audit). Uses the
+      // tooltip-html attribute fallback for byte-fidelity audit recording;
+      // verification above used textContent (no HTML entities) for clean
+      // comparison.
       const oldMessage = (msgBtn.getAttribute('data-overflow-tooltip-html') || msgBtn.textContent || '').trim();
 
       // Idempotency: skip if already JSON. Bypassed when force_overwrite=true
@@ -372,6 +432,27 @@ export async function updateWebhookUrl({ alert_id, new_url }) {
     return { success: false, error: 'new_url must start with http:// or https://', alert_id };
   }
 
+  // Step 0: REST pre-fetch — alert existence check (idempotent not_found
+  // handling) + capture expected message for dialog-content verification
+  // (per feedback_items_drift_dialog_verification.md memory).
+  const restRes = await evaluateAsync(`
+    fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.s !== 'ok' || !Array.isArray(d.r)) return { error: d.errmsg || 'unexpected response' };
+        const a = d.r.find(x => x.alert_id === ${alert_id});
+        return a ? { found: true, message: a.message || '' } : { found: false };
+      })
+      .catch(e => ({ error: e.message }))
+  `);
+  if (!restRes || restRes.error) {
+    return { success: false, error: 'REST pre-fetch failed: ' + (restRes?.error || 'no result'), alert_id };
+  }
+  if (!restRes.found) {
+    return { success: false, action: 'not_found', alert_id, error: 'alert_id not in REST list', note: 'alert may have been deleted' };
+  }
+  const expectedMessage = (restRes.message || '').trim();
+
   // Step A: stash items + callbacks (mirror updateMessage).
   const stashRes = await evaluate(`
     (function stash() {
@@ -441,6 +522,7 @@ export async function updateWebhookUrl({ alert_id, new_url }) {
 
   // Step C: per-alert update sequence.
   const newUrlEscaped = JSON.stringify(new_url);
+  const expectedMessageEscaped = JSON.stringify(expectedMessage);
   const updateExpr = `
     (async function updateOne() {
       const items = window.__efItems;
@@ -490,6 +572,32 @@ export async function updateWebhookUrl({ alert_id, new_url }) {
         if (dialog && dialog.offsetWidth) break;
       }
       if (!dialog || !dialog.offsetWidth) return { error: 'dialog did not appear', alert_id: ${alert_id} };
+
+      // 1.5. Wait for content to fully load + verify dialog is for the
+      // alert we asked for (per feedback_items_drift_dialog_verification.md
+      // memory). callbacks.onEditButtonClick(idx) doesn't always open the
+      // dialog for items[idx] — verify before mutating.
+      await new Promise(r => setTimeout(r, 200));
+      const msgBtnVerify = dialog.querySelector('[data-qa-id="alert-message-button"]');
+      if (!msgBtnVerify) { await cleanCancel(); return { error: 'no alert-message-button in dialog', alert_id: ${alert_id} }; }
+      const observedMessageForVerify = (msgBtnVerify.textContent || '').trim();
+      const expectedFromRest = ${expectedMessageEscaped};
+      {
+        const matchLen = Math.min(observedMessageForVerify.length, expectedFromRest.length, 80);
+        const matched = matchLen > 0 && (
+          observedMessageForVerify === expectedFromRest ||
+          observedMessageForVerify.substring(0, matchLen) === expectedFromRest.substring(0, matchLen)
+        );
+        if (!matched) {
+          await cleanCancel();
+          return {
+            error: 'dialog_content_mismatch',
+            alert_id: ${alert_id},
+            expected_preview: expectedFromRest.substring(0, 100),
+            observed_preview: observedMessageForVerify.substring(0, 100),
+          };
+        }
+      }
 
       // 2. Click the notifications fieldset's button to open the modal.
       const notifBtn = dialog.querySelector('[data-qa-id="alert-notifications-button"]');
