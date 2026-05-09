@@ -195,7 +195,7 @@ async function main() {
 
   // Stash items + callbacks
   const stashRes = await cdp.eval(`(function () {
-    const desc = document.querySelector('[data-name="alert-item-description"]');
+    const desc = document.querySelector('[data-name="alert-item-status"]');
     if (!desc) return { error: 'panel not open' };
     const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
     let walker = desc[fk];

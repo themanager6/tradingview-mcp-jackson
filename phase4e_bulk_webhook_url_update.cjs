@@ -135,7 +135,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Stash + clearSearch (same as phase4d_bulk_*) ─────────────────────────
 const STASH_INIT = `(function () {
-  const desc = document.querySelector('[data-name="alert-item-description"]');
+  const desc = document.querySelector('[data-name="alert-item-status"]');
   if (!desc) return { error: 'no alert-item-description — open Alerts panel first' };
   const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
   let walker = desc[fk];
@@ -163,7 +163,7 @@ const CLEAR_SEARCH = `(function () {
 
 const RESTASH = `(async function () {
   await new Promise(r => setTimeout(r, 800));
-  const desc = document.querySelector('[data-name="alert-item-description"]');
+  const desc = document.querySelector('[data-name="alert-item-status"]');
   if (!desc) return { error: 'no description after restash' };
   const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
   let walker = desc[fk];

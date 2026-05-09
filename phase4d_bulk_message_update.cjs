@@ -175,7 +175,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Stash + clearSearch (mirror update_alerts.cjs) ───────────────────────
 const STASH_INIT = `(function () {
-  const desc = document.querySelector('[data-name="alert-item-description"]');
+  const desc = document.querySelector('[data-name="alert-item-status"]');
   if (!desc) return { error: 'no alert-item-description — open Alerts panel first' };
   const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
   let walker = desc[fk];
@@ -203,7 +203,7 @@ const CLEAR_SEARCH = `(function () {
 
 const RESTASH = `(async function () {
   await new Promise(r => setTimeout(r, 800));
-  const desc = document.querySelector('[data-name="alert-item-description"]');
+  const desc = document.querySelector('[data-name="alert-item-status"]');
   if (!desc) return { error: 'no description after restash' };
   const fk = Object.keys(desc).find(k => k.startsWith('__reactFiber$'));
   let walker = desc[fk];
@@ -441,12 +441,14 @@ async function main() {
     itemsCount = re.items_count;
     console.log(`Search-clear:  cleared=${JSON.stringify(clr.before_value)}; restash items_count=${itemsCount}`);
   }
-  if (itemsCount < 100) {
+  if (itemsCount < 50) {
     console.error(`items_count=${itemsCount} too low — DOM filter still active. Aborting.`);
     console.error('Resolve filter (chart-scope toggle, filter chip, etc.) per project_phase4e_dom_filter_blocker.md');
     ws.close(); process.exit(1);
   }
-  if (itemsCount !== 119) console.warn(`expected 119, got ${itemsCount}. Continuing.`);
+  // Threshold lowered 100 -> 50 (2026-05-09): post-SWING-delete alive count is ~97,
+  // not the pre-delete 119. Aligns with phase4e_bulk_webhook_url_update.cjs:471.
+  if (itemsCount < 90) console.warn(`items_count=${itemsCount}. Expected 90+ post-SWING-delete; some alerts may be filtered.`);
 
   const fetchRes = await fetchAlerts(cdp);
   if (!fetchRes || fetchRes.error) { console.error('fetchAlerts failed:', fetchRes); ws.close(); process.exit(1); }
