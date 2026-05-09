@@ -588,20 +588,19 @@ function parseTpFields(rawTpRows) {
   // Tolerate either single-cell or label-value layouts.
   const syncRow = findRow(rawTpRows, (r) => /\bSYNC\b/i.test(r));
   if (syncRow) {
-    let body = syncRow;
-    // Strip leading "SYNC:" label whether it's its own cell or inline.
-    body = body.replace(/^.*?SYNC:\s*\|?\s*/i, '');
+    // Use cells[1]: drops col-2 "🚨" that v23 ENTER state appends.
+    const syncCells = rowCells(syncRow);
+    let body = syncCells.length >= 2 ? syncCells[1] : syncRow.replace(/^.*?SYNC:\s*\|?\s*/i, '');
     const arrowSplit = body.split(/→|->/);
     if (arrowSplit.length >= 2) {
       const left = arrowSplit[0];
       const right = arrowSplit.slice(1).join('→').trim();
-      out.sync_value = right.replace(/\s*\|\s*$/, '').trim() || null;
+      out.sync_value = right.trim() || null;
       const cpMatch = left.match(/CP:[^·|]*/);
       const tpMatch = left.match(/TP:[^·|]*/);
       if (cpMatch) out.sync_cp_component = cpMatch[0].trim();
       if (tpMatch) out.sync_tp_component = tpMatch[0].trim();
     } else {
-      // No arrow — capture whole body as sync_value
       out.sync_value = body.trim() || null;
     }
   }
@@ -609,7 +608,9 @@ function parseTpFields(rawTpRows) {
   // STATUS row
   const statusRow = findRow(rawTpRows, (r) => /\bSTATUS\b/i.test(r));
   if (statusRow) {
-    out.status_text = statusRow.replace(/^.*?STATUS:?\s*\|?\s*/i, '').trim() || null;
+    // Use cells[1]: drops col-2 "✅" that v23 ENTER state appends.
+    const statusCells = rowCells(statusRow);
+    out.status_text = (statusCells.length >= 2 ? statusCells[1] : statusRow.replace(/^.*?STATUS:?\s*\|?\s*/i, '').trim()) || null;
   }
 
   // INDICATOR-10 Component 3 — v23 TP-side row parsers
@@ -1009,8 +1010,9 @@ function parseNearestRTHRow(rows) {
   if (!row) return out;
   const cells = rowCells(row);
   if (cells.length >= 2 && cells[1] !== '—') {
+    const ageToInt = { 'today': 0, 'yesterday': 1, '2 days ago': 2 };
     const ageMatch = cells[1].match(/^(today|yesterday|2 days ago)/);
-    if (ageMatch) out.nearest_rth_gap_age = ageMatch[1];
+    if (ageMatch) out.nearest_rth_gap_age = ageToInt[ageMatch[1]] ?? null;
     const priceMatch = cells[1].match(/@\s+(-?[\d.]+)/);
     if (priceMatch) out.nearest_rth_gap_ce = parseFloat(priceMatch[1]);
   }
