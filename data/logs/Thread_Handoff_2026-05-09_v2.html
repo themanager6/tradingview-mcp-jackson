@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thread Handoff — 2026-05-09 v2</title>
+<style>
+  :root {
+    --bg:       #080b10;
+    --bg2:      #0d1117;
+    --bg3:      #111820;
+    --border:   #1e2d3d;
+    --green:    #00e676;
+    --green2:   #69ff47;
+    --yellow:   #ffd740;
+    --orange:   #ff9100;
+    --red:      #ff5252;
+    --blue:     #40c4ff;
+    --purple:   #b388ff;
+    --gray:     #546e7a;
+    --dim:      #37474f;
+    --text:     #cfd8dc;
+    --text2:    #90a4ae;
+    --mono:     'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* ── HEADER ── */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+    margin-bottom: 28px;
+  }
+  .header-top {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .header h1 {
+    font-size: 22px;
+    color: var(--green);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .header .meta {
+    color: var(--gray);
+    font-size: 11px;
+  }
+  .header .subtitle {
+    margin-top: 6px;
+    color: var(--text2);
+    font-size: 12px;
+  }
+
+  /* ── SECTIONS ── */
+  section {
+    margin-bottom: 32px;
+  }
+  .section-title {
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--blue);
+    border-left: 3px solid var(--blue);
+    padding-left: 10px;
+    margin-bottom: 14px;
+  }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+  .card-title {
+    font-size: 11px;
+    color: var(--text2);
+    margin-bottom: 8px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  /* ── SHIPPED LIST ── */
+  .shipped-item {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--green);
+    border-radius: 3px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .shipped-item.minor {
+    border-left-color: var(--blue);
+  }
+  .shipped-item .tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    background: #1a2a1a;
+    color: var(--green);
+    border: 1px solid #2a4a2a;
+    margin-right: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .shipped-item .tag.fix    { background: #1a1f2a; color: var(--blue); border-color: #2a3a4a; }
+  .shipped-item .tag.hotfix { background: #2a1a1a; color: var(--orange); border-color: #4a2a1a; }
+  .shipped-item .tag.prep   { background: #1a1a2a; color: var(--purple); border-color: #2a2a4a; }
+  .shipped-item .title { font-weight: bold; color: var(--text); }
+  .shipped-item .detail { margin-top: 4px; color: var(--text2); font-size: 12px; }
+  .shipped-item .commit {
+    font-size: 10px;
+    color: var(--gray);
+    margin-top: 4px;
+    font-family: var(--mono);
+  }
+  .shipped-item .commit a { color: var(--dim); text-decoration: none; }
+
+  /* ── SERVICE STATUS ── */
+  .svc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
+  }
+  .svc-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+  }
+  .svc-name { color: var(--text2); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .svc-status {
+    margin-top: 4px;
+    font-size: 13px;
+    font-weight: bold;
+  }
+  .svc-status.alive  { color: var(--green); }
+  .svc-status.dead   { color: var(--red); }
+  .svc-status.warn   { color: var(--yellow); }
+  .svc-pid { font-size: 11px; color: var(--gray); margin-top: 2px; }
+
+  /* ── TASK LIST ── */
+  .task {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .task:last-child { border-bottom: none; }
+  .task-num {
+    font-size: 11px;
+    color: var(--gray);
+    min-width: 28px;
+    padding-top: 2px;
+  }
+  .task-body { flex: 1; }
+  .task-title { color: var(--text); font-weight: bold; }
+  .task-detail { color: var(--text2); font-size: 12px; margin-top: 3px; }
+  .task-gate {
+    font-size: 10px;
+    color: var(--orange);
+    margin-top: 4px;
+  }
+  .task-gate::before { content: '⛔ GATE: '; }
+  .task-badge {
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+    margin-top: 2px;
+    align-self: flex-start;
+  }
+  .task-badge.p0  { background: #3a0a0a; color: var(--red);    border: 1px solid #5a1a1a; }
+  .task-badge.p1  { background: #2a1a0a; color: var(--orange); border: 1px solid #4a2a0a; }
+  .task-badge.p2  { background: #1a2a1a; color: var(--green);  border: 1px solid #2a4a2a; }
+  .task-badge.p3  { background: #1a1a2a; color: var(--purple); border: 1px solid #2a2a4a; }
+  .task-badge.low { background: #111820; color: var(--gray);   border: 1px solid var(--dim); }
+
+  /* ── FOLLOW-UPS ── */
+  .followup {
+    display: flex;
+    gap: 14px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    align-items: flex-start;
+  }
+  .followup:last-child { border-bottom: none; }
+  .fu-icon { font-size: 14px; min-width: 22px; }
+  .fu-body { flex: 1; }
+  .fu-title { color: var(--text); }
+  .fu-detail { color: var(--text2); font-size: 12px; margin-top: 3px; }
+
+  /* ── COMMIT TABLE ── */
+  .commit-table { width: 100%; border-collapse: collapse; }
+  .commit-table th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--gray);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .commit-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #0d1117;
+    vertical-align: top;
+  }
+  .commit-table tr:last-child td { border-bottom: none; }
+  .commit-table tr:hover td { background: #0d1420; }
+  .commit-sha { font-family: var(--mono); color: var(--blue); font-size: 11px; }
+  .commit-msg { color: var(--text); }
+  .commit-repo {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .commit-repo.tv  { background: #0d2030; color: #40c4ff; border: 1px solid #1a3a50; }
+  .commit-repo.efl { background: #0d2010; color: #00e676; border: 1px solid #1a3a20; }
+  .commit-repo.es  { background: #1a0d20; color: #b388ff; border: 1px solid #2a1a30; }
+  .commit-repo.ot  { background: #1a1a0d; color: #ffd740; border: 1px solid #3a3a1a; }
+
+  /* ── DIFF PATCH ── */
+  .diff-block {
+    background: #060a0f;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    font-size: 11.5px;
+    overflow-x: auto;
+  }
+  .diff-block .fname { color: var(--blue); margin-bottom: 8px; font-weight: bold; }
+  .diff-block .add { color: var(--green2); }
+  .diff-block .del { color: var(--red); }
+  .diff-block .ctx { color: var(--dim); }
+  .diff-block .hunk { color: var(--purple); margin: 6px 0 4px; }
+
+  /* ── INLINE CODE ── */
+  code {
+    background: #0d1117;
+    color: var(--yellow);
+    padding: 1px 5px;
+    border-radius: 2px;
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+
+  /* ── MISC ── */
+  .pill {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    margin-right: 4px;
+  }
+  .pill.green  { background: #1a3a1a; color: var(--green);  border: 1px solid #2a5a2a; }
+  .pill.yellow { background: #2a2a0d; color: var(--yellow); border: 1px solid #3a3a1a; }
+  .pill.red    { background: #2a0d0d; color: var(--red);    border: 1px solid #3a1a1a; }
+  .pill.blue   { background: #0d1a2a; color: var(--blue);   border: 1px solid #1a2a3a; }
+
+  hr.rule { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+  .note {
+    background: #0d1117;
+    border-left: 3px solid var(--yellow);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--text2);
+    border-radius: 0 4px 4px 0;
+    margin-top: 10px;
+  }
+  .note strong { color: var(--yellow); }
+</style>
+</head>
+<body>
+
+<!-- ───────────────── HEADER ───────────────── -->
+<div class="header">
+  <div class="header-top">
+    <h1>Thread Handoff</h1>
+    <span class="meta">2026-05-09 · v2 · Edge Finder Trading System</span>
+  </div>
+  <div class="subtitle">
+    state_logger.js Layer 2b/2c complete &nbsp;·&nbsp;
+    Logger on v22 (v23 promotion pending) &nbsp;·&nbsp;
+    All daemons alive
+  </div>
+</div>
+
+<!-- ───────────────── SHIPPED THIS SESSION ───────────────── -->
+<section>
+  <div class="section-title">Shipped This Session</div>
+
+  <div class="shipped-item">
+    <span class="tag fix">fix</span>
+    <span class="title">Layer 2b — SYNC + STATUS parser: drop trailing col-2 emoji garbage</span>
+    <div class="detail">
+      In v23 TP, <code>syncState == "ENTER"</code> writes <code>"🚨"</code> to SYNC col-2 and
+      <code>"✅"</code> to STATUS col-2. <code>filter(Boolean)</code> kept them, producing
+      <code>sync_value = "ENTER | 🚨"</code> and <code>status_text = "✅ ALL CHECKS PASS | ✅"</code>.
+      Fixed by using <code>rowCells(row)[1]</code> as the parse body — col-2 is now ignored in both parsers.
+      Backward-compatible with v22 (no col-2 content).
+    </div>
+    <div class="commit">uncommitted · scripts/state_logger.js:589–614</div>
+  </div>
+
+  <div class="shipped-item">
+    <span class="tag fix">fix</span>
+    <span class="title">Layer 2c — <code>nearest_rth_gap_age</code>: string → INTEGER</span>
+    <div class="detail">
+      <code>parseNearestRTHRow</code> was storing <code>"today"</code> / <code>"yesterday"</code> /
+      <code>"2 days ago"</code> as raw strings. Schema column is <code>INTEGER</code>.
+      Fixed: <code>ageToInt = { today: 0, yesterday: 1, '2 days ago': 2 }</code> lookup,
+      returns <code>null</code> for absent/dash rows.
+    </div>
+    <div class="commit">uncommitted · scripts/state_logger.js:1011–1014</div>
+  </div>
+
+  <div class="shipped-item minor">
+    <span class="tag fix">fix</span>
+    <span class="title">Layer 2 CP-side — propagate v23 fields from cpFields/tpFields to JSONL</span>
+    <div class="detail">
+      12 CP v23 fields (<code>twenty_day_position</code>, <code>equilibrium_block_active</code>,
+      <code>session_ce_*</code>, <code>nearest_rth_gap_*</code>, <code>gradient_overlap_*</code>)
+      and 17 TP v23 fields were previously parsed but dropped on the floor in
+      <code>sampleOneSymbol()</code>'s return spread. Propagation wired in — fields now land in JSONL.
+    </div>
+    <div class="commit">commit c2a0975 · scripts/state_logger.js</div>
+  </div>
+
+  <div class="shipped-item minor">
+    <span class="tag hotfix">hotfix</span>
+    <span class="title">Phase 4 scripts — two DOM/threshold drift fixes</span>
+    <div class="detail">
+      (1) <code>alert-item-description</code> selector removed by TV; swapped to <code>alert-item-status</code>.
+      (2) <code>phase4d_bulk_message_update</code> <code>items_count</code> threshold was 100 (stale);
+      lowered to 50 after SWING-delete reduced alive alerts to ~97.
+    </div>
+    <div class="commit">commit e781c82 · scripts/</div>
+  </div>
+
+  <div class="shipped-item minor">
+    <span class="tag prep">prep</span>
+    <span class="title">Phase 4 morning prep — SWING + Phase 4e target lists refreshed</span>
+    <div class="detail">
+      Post-incident refresh of SWING indicator source + Phase 4e/4f target alert lists
+      after the Phase 4d bulk-delete run.
+    </div>
+    <div class="commit">commit 398e836</div>
+  </div>
+</section>
+
+<!-- ───────────────── PROBE FINDINGS ───────────────── -->
+<section>
+  <div class="section-title">Layer 2b Probe Findings (before fix)</div>
+  <div class="card">
+    <div class="card-title">raw_tp_rows diagnostic — 2026-05-09 JSONL</div>
+    <p style="color:var(--text2); font-size:12px; margin-bottom:10px;">
+      Logger layout <code>ngChRWJV</code> is <strong style="color:var(--yellow)">still on v22</strong>.
+      Max row-count in recent data is 13 (v22 with OTE Zone + entry rows). Zero occurrences of
+      <code>"3 PDAs:"</code>, <code>"ENTRY ANCHOR:"</code>, <code>"WARNINGS:"</code>, or <code>"PDA TIMER:"</code>
+      in 05-07 through 05-09 JSONL. The 17 TP v23 fields are null because those rows don't exist yet — not
+      because the regexes are wrong.
+    </p>
+    <p style="color:var(--text2); font-size:12px; margin-bottom:8px;">
+      <strong style="color:var(--green)">v23 row-label regexes verified correct</strong> against
+      <code>.tp_v23_cloud_canonical.pine</code> lines 1819–1863:
+    </p>
+    <table style="font-size:11px; color:var(--text2); border-collapse:collapse; width:100%;">
+      <tr>
+        <th style="text-align:left; color:var(--gray); padding:3px 8px; border-bottom:1px solid var(--border);">Pine label</th>
+        <th style="text-align:left; color:var(--gray); padding:3px 8px; border-bottom:1px solid var(--border);">Parser regex</th>
+        <th style="text-align:left; color:var(--gray); padding:3px 8px; border-bottom:1px solid var(--border);">Status</th>
+      </tr>
+      <tr><td style="padding:3px 8px;"><code>"3 PDAs:"</code></td><td style="padding:3px 8px;"><code>/^3 PDAs:/</code></td><td style="padding:3px 8px; color:var(--green);">✓ matches</td></tr>
+      <tr><td style="padding:3px 8px;"><code>"ENTRY ANCHOR:"</code></td><td style="padding:3px 8px;"><code>/^ENTRY ANCHOR:/</code></td><td style="padding:3px 8px; color:var(--green);">✓ matches</td></tr>
+      <tr><td style="padding:3px 8px;"><code>"WARNINGS:"</code></td><td style="padding:3px 8px;"><code>/^WARNINGS:/</code></td><td style="padding:3px 8px; color:var(--green);">✓ matches</td></tr>
+      <tr><td style="padding:3px 8px;"><code>"PDA TIMER:"</code></td><td style="padding:3px 8px;"><code>/^PDA TIMER:/</code></td><td style="padding:3px 8px; color:var(--green);">✓ matches</td></tr>
+      <tr><td style="padding:3px 8px;"><code>"✓ FPFVG[3]"</code> (pda2Mark)</td><td style="padding:3px 8px;"><code>/✓\s+FPFVG/</code></td><td style="padding:3px 8px; color:var(--green);">✓ prefix match ok</td></tr>
+      <tr><td style="padding:3px 8px;"><code>entryAnchorType ∈ {Wick CE, FVG midpoint, Bullish VI, Bearish VI}</code></td><td style="padding:3px 8px;"><code>/^(Wick CE|FVG midpoint|Bullish VI|Bearish VI)/</code></td><td style="padding:3px 8px; color:var(--green);">✓ all four covered</td></tr>
+    </table>
+    <div class="note">
+      <strong>Bottom line:</strong> When <code>ngChRWJV</code> is promoted to v23 TP, the 17 TP fields will populate
+      without further parser changes. The two bugs fixed this session were pre-existing and not related to v23 row
+      labels.
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────── DIFFS ───────────────── -->
+<section>
+  <div class="section-title">Code Changes Applied</div>
+
+  <div class="diff-block" style="margin-bottom:10px;">
+    <div class="fname">scripts/state_logger.js — Layer 2b: SYNC parser (lines ~589–608)</div>
+    <div class="del">-    let body = syncRow;</div>
+    <div class="del">-    body = body.replace(/^.*?SYNC:\s*\|?\s*/i, '');</div>
+    <div class="del">-    // ... arrowSplit logic on full row string</div>
+    <div class="del">-    out.sync_value = right.replace(/\s*\|\s*$/, '').trim() || null;</div>
+    <div class="add">+    // Use cells[1]: drops col-2 "🚨" that v23 ENTER state appends.</div>
+    <div class="add">+    const syncCells = rowCells(syncRow);</div>
+    <div class="add">+    let body = syncCells.length >= 2 ? syncCells[1] : syncRow.replace(...);</div>
+    <div class="add">+    out.sync_value = right.trim() || null;  // clean — no trailing emoji</div>
+  </div>
+
+  <div class="diff-block" style="margin-bottom:10px;">
+    <div class="fname">scripts/state_logger.js — Layer 2b: STATUS parser (lines ~615–618)</div>
+    <div class="del">-    out.status_text = statusRow.replace(/^.*?STATUS:?\s*\|?\s*/i, '').trim() || null;</div>
+    <div class="add">+    // Use cells[1]: drops col-2 "✅" that v23 ENTER state appends.</div>
+    <div class="add">+    const statusCells = rowCells(statusRow);</div>
+    <div class="add">+    out.status_text = (statusCells.length >= 2 ? statusCells[1] : statusRow.replace(...).trim()) || null;</div>
+  </div>
+
+  <div class="diff-block">
+    <div class="fname">scripts/state_logger.js — Layer 2c: parseNearestRTHRow (lines ~1011–1014)</div>
+    <div class="del">-    const ageMatch = cells[1].match(/^(today|yesterday|2 days ago)/);</div>
+    <div class="del">-    if (ageMatch) out.nearest_rth_gap_age = ageMatch[1];  // BUG: stored "today" (string)</div>
+    <div class="add">+    const ageToInt = { 'today': 0, 'yesterday': 1, '2 days ago': 2 };</div>
+    <div class="add">+    const ageMatch = cells[1].match(/^(today|yesterday|2 days ago)/);</div>
+    <div class="add">+    if (ageMatch) out.nearest_rth_gap_age = ageToInt[ageMatch[1]] ?? null;  // INTEGER 0/1/2</div>
+  </div>
+</section>
+
+<!-- ───────────────── DAEMON / SERVICE STATE ───────────────── -->
+<section>
+  <div class="section-title">Daemon &amp; Service State</div>
+  <div class="svc-grid">
+
+    <div class="svc-card">
+      <div class="svc-name">state_logger</div>
+      <div class="svc-status alive">● ALIVE</div>
+      <div class="svc-pid">PID 1720 (node) · layout ngChRWJV · 5-min cycles</div>
+    </div>
+
+    <div class="svc-card">
+      <div class="svc-name">OutcomeTracker Listener</div>
+      <div class="svc-status alive">● RUNNING</div>
+      <div class="svc-pid">Windows Scheduled Task · auto-start at logon · Flask/system Python 3.12</div>
+    </div>
+
+    <div class="svc-card">
+      <div class="svc-name">cloudflared tunnel</div>
+      <div class="svc-status alive">● RUNNING</div>
+      <div class="svc-pid">Windows Service · alerts.drylakecapital.us/alert · UUID db27b049-…</div>
+    </div>
+
+    <div class="svc-card">
+      <div class="svc-name">Python processes</div>
+      <div class="svc-status warn">● 3 ACTIVE</div>
+      <div class="svc-pid">PIDs 4544, 24612, 33800 · Edge Scanner daemon likely among them<br>Verify: <code>Get-Process python*</code></div>
+    </div>
+
+    <div class="svc-card">
+      <div class="svc-name">EFL Electron App</div>
+      <div class="svc-status alive">● v0.1.4</div>
+      <div class="svc-pid">Phase 6c+6d shipped (Outcome Feed chip + R-multiple)</div>
+    </div>
+
+    <div class="svc-card">
+      <div class="svc-name">TV alert engine</div>
+      <div class="svc-status warn">⚠ REGRESSION ACTIVE</div>
+      <div class="svc-pid">Fires only when chart in active visible tab (TV platform bug since ~15:45 ET 05-07). Workaround: keep layout visible.</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────── IMMEDIATE NEXT TASKS ───────────────── -->
+<section>
+  <div class="section-title">Immediate Next Tasks (in order)</div>
+  <div class="card" style="padding:0;">
+
+    <div class="task">
+      <div class="task-num">01</div>
+      <div class="task-body">
+        <div class="task-title">Commit Layer 2b + 2c fixes</div>
+        <div class="task-detail">
+          Stage <code>scripts/state_logger.js</code> and commit both parser fixes from this session.
+          Message: <code>state_logger.js Layer 2b/2c: SYNC/STATUS cell-2 strip + gap_age → INTEGER</code>
+        </div>
+      </div>
+      <div class="task-badge p1">P1 · 5 min</div>
+    </div>
+
+    <div class="task">
+      <div class="task-num">02</div>
+      <div class="task-body">
+        <div class="task-title">Promote logger layout to v23 TP (soak graduation)</div>
+        <div class="task-detail">
+          Logger layout <code>ngChRWJV</code> currently runs v22.3 TP. Soak started ~2026-05-04 (~5 days).
+          When promoted: 17 TP v23 fields will start populating in JSONL automatically — parsers are ready.
+          Steps: (1) open layout <code>ngChRWJV</code> in TV, (2) swap TP indicator to v23 cloud version,
+          (3) re-wire 4 TP inputs to CP v23 plots, (4) verify raw_tp_rows contains "3 PDAs:" in next JSONL sample.
+        </div>
+      </div>
+      <div class="task-badge p1">P1 · INDICATOR-12 pre-req</div>
+    </div>
+
+    <div class="task">
+      <div class="task-num">03</div>
+      <div class="task-body">
+        <div class="task-title">Phase 4e — bulk webhook URL update</div>
+        <div class="task-detail">
+          19 alerts deferred from Phase 4d still need webhook URL set to
+          <code>https://alerts.drylakecapital.us/alert</code>.
+          Pre-condition: operator 2FA must be enabled (SMS sufficient) before bulk edit will persist.
+        </div>
+        <div class="task-gate">Operator must enable account 2FA first</div>
+      </div>
+      <div class="task-badge p2">P2</div>
+    </div>
+
+    <div class="task">
+      <div class="task-num">04</div>
+      <div class="task-body">
+        <div class="task-title">Phase 4f — remaining Phase 4d deferred alerts (19 items)</div>
+        <div class="task-detail">
+          Phase 4d completed 99/118. 19 alerts hit write-quota limit and were deferred.
+          Verify they are still active (not expired), then schedule a bulk message-update run
+          with ≤40 chunk size and 5+ min idle between chunks.
+        </div>
+        <div class="task-gate">Phase 4e 2FA gate must resolve first</div>
+      </div>
+      <div class="task-badge p2">P2</div>
+    </div>
+
+    <div class="task">
+      <div class="task-num">05</div>
+      <div class="task-body">
+        <div class="task-title">INDICATOR-12 — logger promotion + polish triage</div>
+        <div class="task-detail">
+          13-item backlog at <code>docs/ict-reference/INDICATOR-12_polish_backlog.md</code>.
+          Runs after logger layout is confirmed on v23 and a few days of v23 JSONL data exist.
+          Includes C6 (Double Judas AMD-phase filter — highest win-rate impact, requires n≥50 outcomes).
+        </div>
+        <div class="task-gate">Logger v23 promotion (#02 above) must complete first</div>
+      </div>
+      <div class="task-badge p2">P2 · Post-soak</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────── KNOWN FOLLOW-UPS ───────────────── -->
+<section>
+  <div class="section-title">Known Follow-Ups</div>
+  <div class="card" style="padding:0;">
+
+    <div class="followup">
+      <div class="fu-icon">⏳</div>
+      <div class="fu-body">
+        <div class="fu-title">17 TP v23 fields — pending logger v23 promotion</div>
+        <div class="fu-detail">
+          All 17 fields (<code>pda_1_active</code> through <code>pda_time_status</code>) will
+          auto-populate once logger layout <code>ngChRWJV</code> is promoted to v23 TP.
+          Parser regexes are verified correct against <code>.tp_v23_cloud_canonical.pine</code> — no code
+          changes needed. Zero action required until promotion.
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">✅</div>
+      <div class="fu-body">
+        <div class="fu-title">Layer 2c gap_age type fix — COMPLETE (this session)</div>
+        <div class="fu-detail">
+          <code>nearest_rth_gap_age</code> now stores <code>INTEGER</code> (0/1/2) not string.
+          Fix ships with the Layer 2b/2c commit. Backfill of historical JSONL rows is not required
+          — schema column accepts NULLs for the pre-fix period.
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">⚠️</div>
+      <div class="fu-body">
+        <div class="fu-title">TV alert engine regression — server-side eval no longer fires on invisible tab</div>
+        <div class="fu-detail">
+          Since ~15:45 ET 2026-05-07, alerts only fire when the chart is in an active visible TV tab.
+          Workaround in effect: keep multi-symbol logger layout visible during trading.
+          Support ticket filed. Watch for TV hotfix. Reference: <code>feedback_tv_alert_engine_regression_2026-05-07.md</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">🔬</div>
+      <div class="fu-body">
+        <div class="fu-title">C6 — Double Judas / AMD-phase pool-size filter (highest win-rate impact)</div>
+        <div class="fu-detail">
+          33% of Elite alerts fire during AMD manipulation phase (Double Judas) — directionally correct
+          but too early. Projected win-rate improvement: 27.8% → ~61% if Pattern A losses convert.
+          Depends on C1 (visibility) + n≥50 outcome dataset. Part of INDICATOR-12 queue.
+          Do not investigate until Phase 4 + logger v23 promotion resolve.
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">📌</div>
+      <div class="fu-body">
+        <div class="fu-title">Edge Scanner backlog (C-priority, capture-only)</div>
+        <div class="fu-detail">
+          (1) Add dates to Edge Scanner Discord/GUI recommendations.
+          (2) Discovery Mode awareness in <code>analyze_ticker()</code>.
+          Do not investigate until C1-C5 Pine queue + Phase 4 resolve.
+          Reference: <code>project_edge_scanner_queue.md</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">🏗️</div>
+      <div class="fu-body">
+        <div class="fu-title">Outcome Tracker UI — Phase 1 complete, Phases 2-4 deferred</div>
+        <div class="fu-detail">
+          Phase 1 (fire-feed capture) operational. R-multiple / exits / wins / losses = Phase 4 work (~6-10 hr,
+          deferred). "Fire Feed" terminology in use until Phase 4 ships.
+          HARD RULE: every app must have a UI — Outcome Tracker UI scope TBD.
+        </div>
+      </div>
+    </div>
+
+    <div class="followup">
+      <div class="fu-icon">🔒</div>
+      <div class="fu-body">
+        <div class="fu-title">Phase 4e — 2FA gate unresolved</div>
+        <div class="fu-detail">
+          TV webhook URL mutation requires account 2FA (SMS sufficient). Plan tier is not the gate.
+          Until 2FA is enabled, bulk webhook updates will silently no-op (client-side JS guard upstream of WS).
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────── LATEST COMMITS ───────────────── -->
+<section>
+  <div class="section-title">All 5 Repos — Latest 5 Commits Each</div>
+
+  <!-- TV-MCP -->
+  <div class="card" style="margin-bottom:14px; padding:0;">
+    <table class="commit-table">
+      <thead>
+        <tr>
+          <th colspan="3" style="background:#0d1420; padding:8px 10px; color:var(--blue);">
+            tradingview-mcp-jackson &nbsp;<span style="color:var(--gray); font-size:10px;">themanager6/tradingview-mcp-jackson · branch: main</span>
+          </th>
+        </tr>
+        <tr><th>SHA</th><th>Message</th><th></th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="commit-sha">c2a0975</span></td><td class="commit-msg">state_logger.js Layer 2: propagate v23 fields from cpFields/tpFields to JSONL</td><td><span class="commit-repo tv">TV-MCP</span></td></tr>
+        <tr><td><span class="commit-sha">e781c82</span></td><td class="commit-msg">Phase 4 scripts: DOM selector + items_count threshold drift fixes</td><td><span class="commit-repo tv">TV-MCP</span></td></tr>
+        <tr><td><span class="commit-sha">398e836</span></td><td class="commit-msg">Phase 4 morning prep: refresh SWING + Phase 4e target lists post-incident</td><td><span class="commit-repo tv">TV-MCP</span></td></tr>
+        <tr><td><span class="commit-sha">5e033fa</span></td><td class="commit-msg">phase4_handoff: reflect tonight's late-session tooling shipments</td><td><span class="commit-repo tv">TV-MCP</span></td></tr>
+        <tr><td><span class="commit-sha">6fcc700</span></td><td class="commit-msg">Post-timeout REST verification: catch UI-lag false-failures</td><td><span class="commit-repo tv">TV-MCP</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- EFL -->
+  <div class="card" style="margin-bottom:14px; padding:0;">
+    <table class="commit-table">
+      <thead>
+        <tr>
+          <th colspan="3" style="background:#0d1a10; padding:8px 10px; color:var(--green);">
+            edge-finder-logger-app &nbsp;<span style="color:var(--gray); font-size:10px;">themanager6/edge-finder-logger-app · branch: main</span>
+          </th>
+        </tr>
+        <tr><th>SHA</th><th>Message</th><th></th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="commit-sha">94078ef</span></td><td class="commit-msg">Phase 6c+6d: Outcome Feed rows show outcome class chip + R-multiple</td><td><span class="commit-repo efl">EFL</span></td></tr>
+        <tr><td><span class="commit-sha">7b28e66</span></td><td class="commit-msg">v0.1.4: fix Outcome Feed status indicator stuck at "disconnected"</td><td><span class="commit-repo efl">EFL</span></td></tr>
+        <tr><td><span class="commit-sha">03b046d</span></td><td class="commit-msg">EFL v0.1.3: Outcome Tracker integration Phases 1+2</td><td><span class="commit-repo efl">EFL</span></td></tr>
+        <tr><td><span class="commit-sha">d361100</span></td><td class="commit-msg">Initial commit — EFL v0.1.2 baseline</td><td><span class="commit-repo efl">EFL</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Edge Scanner -->
+  <div class="card" style="margin-bottom:14px; padding:0;">
+    <table class="commit-table">
+      <thead>
+        <tr>
+          <th colspan="3" style="background:#150d1a; padding:8px 10px; color:var(--purple);">
+            edge-scanner &nbsp;<span style="color:var(--gray); font-size:10px;">themanager6/edge-scanner · branch: main</span>
+          </th>
+        </tr>
+        <tr><th>SHA</th><th>Message</th><th></th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="commit-sha">fb11402</span></td><td class="commit-msg">Discord embed dates + Discovery Mode trend detection refinement (SMA fallback)</td><td><span class="commit-repo es">ES</span></td></tr>
+        <tr><td><span class="commit-sha">70b9acb</span></td><td class="commit-msg">Discovery Mode awareness: trend detection + direction gate + regime refinement + TRANSITIONING cap (106 tests)</td><td><span class="commit-repo es">ES</span></td></tr>
+        <tr><td><span class="commit-sha">49c06f3</span></td><td class="commit-msg">Phase 6b: capital deployment decision framework + position sizer + CLI + 17 tests</td><td><span class="commit-repo es">ES</span></td></tr>
+        <tr><td><span class="commit-sha">1c589c2</span></td><td class="commit-msg">ESR Phase 1+: extend silent-degradation to 12 more sites across 6 files</td><td><span class="commit-repo es">ES</span></td></tr>
+        <tr><td><span class="commit-sha">8a9e6cf</span></td><td class="commit-msg">ESR Phase 1+: silent-degradation rolling counter (Candidate 2 MVP)</td><td><span class="commit-repo es">ES</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Outcome Tracker -->
+  <div class="card" style="padding:0;">
+    <table class="commit-table">
+      <thead>
+        <tr>
+          <th colspan="3" style="background:#1a1a0d; padding:8px 10px; color:var(--yellow);">
+            edge-finder-outcome-tracker &nbsp;<span style="color:var(--gray); font-size:10px;">local · branch: main</span>
+          </th>
+        </tr>
+        <tr><th>SHA</th><th>Message</th><th></th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="commit-sha">2570125</span></td><td class="commit-msg">Layer 2 mapper fix: prefer v23 numeric twenty_day_position over v22 quadrant string</td><td><span class="commit-repo ot">OT</span></td></tr>
+        <tr><td><span class="commit-sha">17178eb</span></td><td class="commit-msg">Sub-project 2: Real Pine state capture via state_logger JSONL bridge</td><td><span class="commit-repo ot">OT</span></td></tr>
+        <tr><td><span class="commit-sha">23097bc</span></td><td class="commit-msg">Entry Precision Metrics Report (build #4)</td><td><span class="commit-repo ot">OT</span></td></tr>
+        <tr><td><span class="commit-sha">5e0c5c9</span></td><td class="commit-msg">Hold Time Analysis Report (build #3)</td><td><span class="commit-repo ot">OT</span></td></tr>
+        <tr><td><span class="commit-sha">591963d</span></td><td class="commit-msg">Pre-Launch Condition Analysis Report (build #2, Path A)</td><td><span class="commit-repo ot">OT</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ───────────────── FOOTER ───────────────── -->
+<hr class="rule">
+<div style="color:var(--dim); font-size:11px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <span>Generated 2026-05-09 · Thread Handoff v2 · Edge Finder Trading System</span>
+  <span>
+    <span class="pill green">state_logger ALIVE</span>
+    <span class="pill green">cloudflared RUNNING</span>
+    <span class="pill green">OT Listener RUNNING</span>
+    <span class="pill yellow">TV alert regression</span>
+    <span class="pill yellow">v23 logger promotion pending</span>
+  </span>
+</div>
+
+</body>
+</html>
