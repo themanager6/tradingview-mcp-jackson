@@ -4,6 +4,7 @@
  * They throw on error (callers catch and format).
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { readFileSync } from 'fs';
 
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
@@ -261,6 +262,11 @@ export async function getSource() {
   }
 
   return { success: true, source, line_count: source.split('\n').length, char_count: source.length };
+}
+
+export async function setSourceFromFile({ file_path }) {
+  const source = readFileSync(file_path, 'utf8');
+  return setSource({ source });
 }
 
 export async function setSource({ source }) {

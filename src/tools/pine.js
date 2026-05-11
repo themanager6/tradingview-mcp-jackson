@@ -15,6 +15,13 @@ export function registerPineTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('pine_set_source_from_file', 'Set Pine Script source code from a local file path (avoids large string passing)', {
+    file_path: z.string().describe('Absolute path to the .pine file to inject into the editor'),
+  }, async ({ file_path }) => {
+    try { return jsonResult(await core.setSourceFromFile({ file_path })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('pine_compile', 'Compile / add the current Pine Script to the chart', {}, async () => {
     try { return jsonResult(await core.compile()); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }

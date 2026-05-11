@@ -64,22 +64,83 @@ export async function runBrief({ rules_path } = {}) {
   for (const symbol of watchlist) {
     try {
       await chart.setSymbol({ symbol });
-      await new Promise((r) => setTimeout(r, 900));
       await chart.setTimeframe({ timeframe: default_timeframe });
-      await new Promise((r) => setTimeout(r, 900));
 
-      const [state, indicators, quote] = await Promise.all([
+      // Wait for chart to reflect the correct symbol before reading data
+      let ready = false;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const state = await chart.getState();
+        const loadedSymbol = (state.symbol || "").toUpperCase();
+        const expectedSymbol = symbol.includes(":")
+          ? symbol.split(":")[1].toUpperCase()
+          : symbol.toUpperCase();
+        if (loadedSymbol.includes(expectedSymbol) || expectedSymbol.includes(loadedSymbol)) {
+          ready = true;
+          break;
+        }
+      }
+
+      if (!ready) {
+        results.push({ symbol, error: `Chart did not switch to ${symbol} after retries` });
+        continue;
+      }
+
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Switch to 1-min for Context Panel (indicator is loaded on 1-min charts)
+      await chart.setTimeframe({ timeframe: "1" });
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const [state, indicators, quote, contextPanel] = await Promise.all([
         chart.getState(),
         data.getStudyValues(),
         data.getQuote({}),
+        data.getPineTables({ study_filter: "Context Panel" }),
       ]);
+
+      // Parse Context Panel rows into a structured object for easier reading
+      let context = null;
+      try {
+        const rows = contextPanel?.studies?.[0]?.tables?.[0]?.rows || [];
+        if (rows.length) {
+          context = {};
+          for (const row of rows) {
+            const [key, val] = row.split(" | ");
+            if (!key) continue;
+            const k = key.trim();
+            const v = val ? val.trim() : "";
+            if (k.includes("WATCHLIST"))       context.watchlist_scores = v;
+            else if (k.includes("MNQ ") && v)  context.watchlist_detail = (context.watchlist_detail || "") + row + " | ";
+            else if (k === "Dollar:")           context.dollar = v;
+            else if (k.startsWith("Impact on"))context.dollar_impact = v;
+            else if (k === "Market / ATR:")     context.market_mode = v;
+            else if (k === "3-Day Trend:")      context.trend = v;
+            else if (k === "Best Direction:")   context.best_direction = v;
+            else if (k === "W.Bias / Narrative:") context.bias_narrative = v;
+            else if (k === "Session Bias:")     context.session_bias = v;
+            else if (k === "Current Session:")  context.current_session = v;
+            else if (k === "Liquidity Swept:")  context.sweep = v;
+            else if (k.includes("Pending Liq"))context.pending_liq = v;
+            else if (k.includes("FPFVG SETUP")) context.fpfvg_setup = v;
+            else if (k.startsWith("✓ ID") || k.startsWith("○ ID")) context.fpfvg_steps = (context.fpfvg_steps || "") + row + " ";
+            else if (k === "Confluences:")      context.confluences = v;
+            else if (k.includes("ENTER NOW") || k.includes("ALL STARS")) context.signal = row;
+            else if (k.includes("⏳ WAIT"))     context.wait_reason = v;
+            else if (k.includes("⚠  Size"))    context.size_warning = v;
+          }
+          // Also keep raw rows for full context
+          context.raw = rows;
+        }
+      } catch (_) {}
 
       results.push({
         symbol,
-        timeframe: default_timeframe,
+        timeframe: "1",
         state,
         indicators,
         quote,
+        context,
       });
     } catch (err) {
       results.push({ symbol, error: err.message });
@@ -106,10 +167,14 @@ export async function runBrief({ rules_path } = {}) {
     },
     symbols_scanned: results,
     instruction: [
-      "For each symbol in symbols_scanned, apply the bias_criteria from rules to the indicator readings.",
-      "Output one line per symbol: SYMBOL | BIAS: [bullish/bearish/neutral] | KEY LEVEL: [price] | WATCH: [what to monitor]",
-      "End with a one-sentence overall market read.",
-      "Be direct. No preamble.",
+      "Each symbol in symbols_scanned now includes a `context` field from the Context Panel indicator.",
+      "Use context.trend for 3-day trend, context.best_direction for trade direction, context.bias_narrative for W.Bias/Narrative,",
+      "context.sweep for liquidity sweep, context.fpfvg_setup for setup status, context.confluences for confluence count,",
+      "context.signal for any ALL STARS ALIGNED alerts, context.pending_liq for blocking liquidity levels,",
+      "context.current_session for session window, context.dollar for dollar filter status.",
+      "For each symbol output: SYMBOL — price | Bias: [from best_direction+bias_narrative] | Key level: [pending_liq or relevant price] | Setup: [fpfvg_setup + confluences] | Session: [current_session].",
+      "Flag any context.signal = ALL STARS ALIGNED immediately at the top.",
+      "End with a one-line overall market read. Be direct. No preamble.",
     ].join(" "),
   };
 }

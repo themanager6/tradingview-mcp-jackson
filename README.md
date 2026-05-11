@@ -258,6 +258,7 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `pane_set_symbol` | Set symbol on any pane |
 | `draw_shape` | Draw horizontal_line, trend_line, rectangle, text |
 | `alert_create` / `alert_list` / `alert_delete` | Manage price alerts |
+| `alert_update_message` | Update message field on existing Pine alertcondition subscription (idempotent; handles inline + modal UI variants) |
 | `batch_run` | Run action across multiple symbols/timeframes |
 | `watchlist_get` / `watchlist_add` | Read/modify watchlist |
 | `capture_screenshot` | Screenshot (regions: full, chart, strategy_tester) |
@@ -283,6 +284,54 @@ tv stream quote | jq '.close'      # monitor price ticks
 ```
 
 Full command list: `tv --help`
+
+---
+
+## Indicator State Logger
+
+`scripts/state_logger.js` samples Edge Finder v22.3 panel state (CP + TP scores, SYNC decision, FPFVG state, warnings, etc.) every 5 minutes across all 8 watchlist instruments and writes JSONL records to `logs/indicator_state/YYYY-MM-DD.jsonl`. Field schema is documented in `logs/indicator_state/SCHEMA.md`.
+
+### Setup — dedicated logger layout (one-time)
+
+The logger drives a **separate TradingView layout** so it does not yank your active trading chart through 8 symbols every 5 minutes. The trading layout and the logger layout are independent:
+
+1. In TradingView, right-click the active trading layout tab and pick **Save As...** Name the new layout `EDGE FINDER LOGGER` (or whatever you like).
+2. Open the new layout in its own tab. Make sure both **EDGE FINDER v22.3 - Context Panel** and **EDGE FINDER v22.2 - Trade Plan** are loaded on it. Other indicators are optional.
+3. Note the new layout's ID — visible in the URL as `tradingview.com/chart/<LAYOUT_ID>/`. Set `LOGGER_LAYOUT_ID` at the top of `scripts/state_logger.js` to that ID. Default is `ngChRWJV`.
+4. The logger picks the first CDP target whose URL matches `/chart/<LOGGER_LAYOUT_ID>/`. If multiple tabs match, it refuses to start — close duplicates and retry.
+
+> [!IMPORTANT]
+> **Indicator input changes on the trading layout do NOT propagate to the logger layout.** They are separate layouts after Save As. To keep recorded data consistent with what you trade on, update the logger layout's CP/TP indicator inputs whenever the trading layout's are changed.
+
+### Commands
+
+```bash
+# Single test cycle — writes ~8 records to today's file, then exits
+node scripts/state_logger.js --once
+
+# Continuous recurring logger (5-min cycles, foreground)
+node scripts/state_logger.js
+
+# Stop
+Ctrl+C in the running terminal
+```
+
+### Files
+
+| Path | Purpose |
+|---|---|
+| `scripts/state_logger.js` | The logger script |
+| `logs/indicator_state/SCHEMA.md` | Field definitions + jq/pandas query examples |
+| `logs/indicator_state/YYYY-MM-DD.jsonl` | Daily log file (UTC) |
+| `logs/indicator_state/.logger.pid` | PID lock — prevents two loggers running concurrently |
+
+### Concurrency
+
+A PID lock at `logs/indicator_state/.logger.pid` blocks a second instance from starting while one is alive. The lock is removed on clean SIGINT exit. If the logger is killed without cleanup (e.g. `kill -9`), the next start will detect the stale PID and reclaim the lock automatically.
+
+### Tab hygiene
+
+If you see CDP listing extra TradingView chart tabs from prior sessions (e.g. old v20-era layouts), they don't affect the logger — it only binds to tabs whose URL matches `LOGGER_LAYOUT_ID`. Close them when convenient.
 
 ---
 

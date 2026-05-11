@@ -25,6 +25,13 @@ if "%TV_EXE%"=="" (
     for /f "tokens=*" %%i in ('where TradingView.exe 2^>nul') do set "TV_EXE=%%i"
 )
 
+REM Strategy 5 — Microsoft Store via Get-AppxPackage (works for Store installs)
+if not defined TV_EXE (
+    for /f "delims=" %%i in ('powershell -NoProfile -Command "$loc = (Get-AppxPackage -Name 'TradingView.Desktop').InstallLocation; if ($loc) { $loc + '\TradingView.exe' }" 2^>nul') do (
+        if exist "%%i" set "TV_EXE=%%i"
+    )
+)
+
 if "%TV_EXE%"=="" (
     echo Error: TradingView not found.
     echo Checked: %%LOCALAPPDATA%%\TradingView, %%PROGRAMFILES%%\TradingView, WindowsApps
