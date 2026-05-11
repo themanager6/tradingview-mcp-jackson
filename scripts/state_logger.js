@@ -388,6 +388,24 @@ function flattenTableStudies(tableStudies) {
   return rows;
 }
 
+function parseAnchorTf(rawCpRows, fpfvgSetup) {
+  if (!rawCpRows || !fpfvgSetup) return null;
+  const setup = fpfvgSetup.toUpperCase();
+  const dir = setup.includes('BULLISH') ? 'BULLISH' : setup.includes('BEARISH') ? 'BEARISH' : null;
+  if (!dir) return null;
+  const htfRow = rawCpRows.find((r) => /^HTF FVG:/.test(r));
+  if (!htfRow) return null;
+  const cells = htfRow.split(' | ');
+  if (cells.length < 2) return null;
+  // Match e.g. "4H BULLISH", "1H BEARISH", "Daily BULLISH"
+  const re = /(\d+H|Daily|1D|W)\s+(BULLISH|BEARISH)/gi;
+  let m;
+  while ((m = re.exec(cells[1])) !== null) {
+    if (m[2].toUpperCase() === dir) return m[1];
+  }
+  return null;
+}
+
 function findRow(rows, predicate) {
   if (!rows) return null;
   for (const r of rows) {
@@ -782,6 +800,7 @@ async function sampleOneSymbol(s, symbol, panelVersionFromState) {
       pda_count: tpFields.pda_count,
       entry_anchor_price: tpFields.entry_anchor_price,
       entry_anchor_type: tpFields.entry_anchor_type,
+      entry_anchor_tf: parseAnchorTf(rawCp, cpFields.fpfvg_setup),
       pda_hierarchy_count: tpFields.pda_hierarchy_count,
       warning_body_through_ce: tpFields.warning_body_through_ce,
       warning_time_in_gap: tpFields.warning_time_in_gap,
