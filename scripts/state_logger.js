@@ -431,6 +431,7 @@ function rowCells(row) {
 function parseCpFields(rawCpRows) {
   const out = {
     panel_version_cp: null,
+    cp_score: null,
     warning_text: null,
     direction_bias: null,
     market_mode: null,
@@ -561,6 +562,16 @@ function parseCpFields(rawCpRows) {
   const waitRow = findRow(rawCpRows, (r) => /WAIT:/.test(r) && /⏳|^WAIT:/.test(r));
   if (waitRow) out.wait_reason = rowAfterLabel(waitRow, /^.*?WAIT:\s*\|?\s*/);
 
+  // SCORE BREAKDOWN — "TOTAL: | 7/10 | AUTH (7+)"
+  const totalRow = findRow(rawCpRows, (r) => /^TOTAL:/.test(r));
+  if (totalRow) {
+    const cells = rowCells(totalRow);
+    if (cells.length >= 2) {
+      const m = cells[1].match(/^(\d+)/);
+      if (m) out.cp_score = parseInt(m[1], 10);
+    }
+  }
+
   // INDICATOR-10 Component 3 — v23 CP-side row parsers
   Object.assign(out, parse20DayPosRow(rawCpRows));
   Object.assign(out, parseSessionCERow(rawCpRows));
@@ -573,6 +584,7 @@ function parseCpFields(rawCpRows) {
 function parseTpFields(rawTpRows) {
   const out = {
     panel_version_tp: null,
+    tp_score: null,
     sync_value: null,
     sync_cp_component: null,
     sync_tp_component: null,
@@ -631,6 +643,23 @@ function parseTpFields(rawTpRows) {
     out.status_text = (statusCells.length >= 2 ? statusCells[1] : statusRow.replace(/^.*?STATUS:?\s*\|?\s*/i, '').trim()) || null;
   }
 
+  // TP score — primary: SYNC row "TP: 3/7" → 3
+  if (out.sync_tp_component) {
+    const m = out.sync_tp_component.match(/TP:\s*(\d+)/);
+    if (m) out.tp_score = parseInt(m[1], 10);
+  }
+  // TP score — fallback: "SETUP SCORE: | 5 / 10  BELOW THRESHOLD" → 5
+  if (out.tp_score === null) {
+    const scoreRow = findRow(rawTpRows, (r) => /^SETUP SCORE:/.test(r));
+    if (scoreRow) {
+      const cells = rowCells(scoreRow);
+      if (cells.length >= 2) {
+        const m = cells[1].match(/^(\d+)/);
+        if (m) out.tp_score = parseInt(m[1], 10);
+      }
+    }
+  }
+
   // INDICATOR-10 Component 3 — v23 TP-side row parsers
   Object.assign(out, parse3PDAsRow(rawTpRows));
   Object.assign(out, parseEntryAnchorRow(rawTpRows));
@@ -638,16 +667,6 @@ function parseTpFields(rawTpRows) {
   Object.assign(out, parsePDATimerRow(rawTpRows));
 
   return out;
-}
-
-function studyValueNumber(studies, indicatorNameFragment, fieldName) {
-  if (!studies) return null;
-  const match = studies.find((s) => (s.name || '').includes(indicatorNameFragment));
-  if (!match || !match.values) return null;
-  const v = match.values[fieldName];
-  if (v === undefined || v === null) return null;
-  const n = parseFloat(v);
-  return Number.isFinite(n) ? n : null;
 }
 
 // ---------- per-symbol sample ----------
@@ -743,8 +762,8 @@ async function sampleOneSymbol(s, symbol, panelVersionFromState) {
     const cpFields = parseCpFields(rawCp);
     const tpFields = parseTpFields(rawTp);
 
-    const cpScore = studyValueNumber(studies, 'Context Panel', 'CP Quality Score');
-    const tpScore = studyValueNumber(studies, 'Trade Plan', 'TP Quality Score');
+    const cpScore = cpFields.cp_score ?? null;
+    const tpScore = tpFields.tp_score ?? null;
 
     const versionParts = [cpFields.panel_version_cp, tpFields.panel_version_tp].filter(Boolean);
     const panel_version = versionParts.length ? versionParts.join(' / ') : panelVersionFromState;
