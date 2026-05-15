@@ -1,0 +1,1965 @@
+//@version=6
+indicator("EDGE FINDER v23.2 - Trade Plan", overlay=true, max_boxes_count=50, max_lines_count=50)
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// EDGE FINDER v20 â€” TRADE PLAN PANEL
+//
+// Companion to EDGE FINDER v20 - Context Panel
+// Lives bottom-right. Shows the execution decision only.
+// Score calculation is IDENTICAL to Context Panel â€” single source of truth.
+//
+// Shows: Setup Score Â· Direction Â· Entry Â· Stop Â· Risk Â· T1 Â· T2 Â· R-multiples Â· Status
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€ AUTO-DETECT INSTRUMENT FROM CHART TICKER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+string detectedTicker = syminfo.ticker
+string instrument = str.contains(detectedTicker, "MNQ") ? "MNQ" : str.contains(detectedTicker, "MGC") ? "MGC" : str.contains(detectedTicker, "MCL") ? "MCL" : str.contains(detectedTicker, "MES") ? "MES" : str.contains(detectedTicker, "EURUSD") ? "EURUSD" : str.contains(detectedTicker, "EURJPY") ? "EURJPY" : str.contains(detectedTicker, "USDJPY") ? "USDJPY" : str.contains(detectedTicker, "GBPUSD") ? "GBPUSD" : input.string("MNQ", "Instrument (manual override)", options=["MNQ", "MGC", "MCL", "EURUSD", "EURJPY", "USDJPY", "GBPUSD", "MES"])
+lookbackDays = input.int(20, "Lookback Days", minval=5, maxval=60)
+showDashboard = input.bool(true, "Show Dashboard")
+minQualityAlert = input.int(7, "Min Quality Alert", minval=1, maxval=10)
+
+discoveryLookback = input.int(20, "Discovery Mode Lookback Bars", minval=10, maxval=50, group="Discovery Mode")
+discoveryThreshold = input.int(75, "Discovery Threshold %", minval=60, maxval=95, group="Discovery Mode")
+premiumZone = input.int(60, "Premium Zone %", minval=55, maxval=75, group="Discovery Mode")
+discountZone = input.int(40, "Discount Zone %", minval=25, maxval=45, group="Discovery Mode")
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// DUAL-INDICATOR AUTHORIZATION INPUTS (v22.2)
+// Wire these to the matching plots on Context Panel v22.2
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+cpSignalSource = input.source(close, title="CP Alignment Signal", group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v22.2 - Context Panel â†’ CP Alignment Signal")
+cpScoreSource  = input.source(close, title="CP Quality Score",    group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v22.2 - Context Panel â†’ CP Quality Score")
+bool cpInputsWired = cpSignalSource == math.round(cpSignalSource) and cpSignalSource >= -1 and cpSignalSource <= 1 and cpScoreSource == math.round(cpScoreSource) and cpScoreSource >= 0 and cpScoreSource <= 10
+bool cpAlignedLong  = cpInputsWired and cpSignalSource >  0.5
+bool cpAlignedShort = cpInputsWired and cpSignalSource < -0.5
+int  cpScoreInt     = cpInputsWired ? int(math.round(cpScoreSource)) : 0
+
+// â”€â”€â”€ LAYER 2 wiring (v23 â€” INDICATOR-2) â€” Equilibrium Block from CP â”€â”€â”€
+equilibriumBlockSource = input.source(close, title="Equilibrium Block (from CP)", group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v23 - Context Panel â†’ Equilibrium Block")
+bool equilibriumBlockWired   = equilibriumBlockSource == math.round(equilibriumBlockSource) and equilibriumBlockSource >= 0 and equilibriumBlockSource <= 1
+bool inEquilibriumNoMansLand = equilibriumBlockWired and equilibriumBlockSource > 0.5
+
+// â”€â”€â”€ LAYER 7 wiring (v23 â€” INDICATOR-5) â€” Gradient Overlap from CP â”€â”€â”€
+gradientOverlapInput = input.source(close, title="Gradient Overlap (from CP)", group="Dual-Indicator Authorization", tooltip="Point this at: EDGE FINDER v23 - Context Panel â†’ Gradient Overlap")
+bool gradientOverlapWired   = gradientOverlapInput == math.round(gradientOverlapInput) and gradientOverlapInput >= 0 and gradientOverlapInput <= 1
+bool gradientLevelOverlap   = gradientOverlapWired and gradientOverlapInput > 0.5
+
+sweepMaxAge  = input.float(8.0,  "Max Sweep Age (hours)", minval=4.0, maxval=48.0, step=1.0, group="Sweep Filters")
+
+// -- SETUP GATES (v23.2) ---------------------------------------------------------
+bool inp_hourGates = input.bool(true, "Hour Gates (dead-zone block + elite boost)", group="Setup Gates")
+bool inp_rangeEx   = input.bool(true, "Range Extreme gate (+2/-1 score)",           group="Setup Gates")
+bool inp_nyAft     = input.bool(true, "NY Afternoon short block + FVG penalty",     group="Setup Gates")
+
+bool isForex = instrument == "EURUSD" or instrument == "EURJPY" or instrument == "USDJPY" or instrument == "GBPUSD"
+bool isFutures = not isForex
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 20-DAY QUADRANTS
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+lookback20High = ta.highest(high, lookbackDays)
+lookback20Low  = ta.lowest(low, lookbackDays)
+lookback20Range = lookback20High - lookback20Low
+quad100 = lookback20High
+quad75  = lookback20Low + lookback20Range * 0.75
+quad50  = lookback20Low + lookback20Range * 0.50
+quad25  = lookback20Low + lookback20Range * 0.25
+quad0   = lookback20Low
+currentRangePercent = lookback20Range > 0 ? ((close - lookback20Low) / lookback20Range) * 100 : 50
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// WEEKLY + DAILY + MONTHLY
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+weeklyHigh = request.security(syminfo.tickerid, "W", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+weeklyLow  = request.security(syminfo.tickerid, "W", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+weeklyRange = weeklyHigh - weeklyLow
+weeklyRangePercent = weeklyRange > 0 ? ((close - weeklyLow) / weeklyRange) * 100 : 50
+
+float dailyHigh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float dailyLow  = request.security(syminfo.tickerid, "D", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float dailyRange = dailyHigh - dailyLow
+float dailyRangePercent = dailyRange > 0 ? ((close - dailyLow) / dailyRange) * 100 : 50
+
+float todayDHigh    = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float todayDLow     = request.security(syminfo.tickerid, "D", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float todayDRange   = todayDHigh - todayDLow
+float priceLocation = todayDRange > 0 ? (close - todayDLow) / todayDRange * 100 : 50.0
+bool  inPremium     = priceLocation > premiumZone
+bool  inDiscount    = priceLocation < (100 - premiumZone)
+
+float monthlyHigh = request.security(syminfo.tickerid, "M", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float monthlyLow  = request.security(syminfo.tickerid, "M", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float monthlyRange = monthlyHigh - monthlyLow
+float monthlyRangePercent = monthlyRange > 0 ? ((close - monthlyLow) / monthlyRange) * 100 : 50
+
+weeklyBias  = close > weeklyHigh ? "BULLISH" : close < weeklyLow ? "BEARISH" : "NEUTRAL"
+biasAligned = (weeklyBias == "BULLISH" and close > quad50) or (weeklyBias == "BEARISH" and close < quad50)
+
+atrDaily  = request.security(syminfo.tickerid, "D", ta.atr(14), barmerge.gaps_off, barmerge.lookahead_on)
+atrWeekly = request.security(syminfo.tickerid, "W", ta.atr(14), barmerge.gaps_off, barmerge.lookahead_on)
+[re60_h, re60_l] = request.security(syminfo.tickerid, "60", [high, low], lookahead=barmerge.lookahead_off)
+atrAvg    = ta.sma(atrDaily, 20)
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ATR REGIME
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+string atrRegime = ""
+if instrument == "MNQ"
+    if atrDaily > 650
+        atrRegime := "DEATH ZONE"
+    else if atrDaily >= 450
+        atrRegime := "ELEVATED"
+    else if atrDaily >= 300
+        atrRegime := "GOLDILOCKS"
+    else
+        atrRegime := "LOW"
+else if instrument == "MGC"
+    if atrDaily > 155
+        atrRegime := "EXTREME"
+    else if atrDaily >= 130 and atrDaily <= 150
+        atrRegime := "PRIME"
+    else if atrDaily >= 115 and atrDaily < 130
+        atrRegime := "TRANSITION"
+    else
+        atrRegime := "TIME-DEP"
+else if instrument == "MCL"
+    atrRegime := atrDaily > 13 ? "HIGH" : "LOW"
+else if instrument == "EURUSD"
+    if atrDaily >= 0.006 and atrDaily <= 0.010
+        atrRegime := "GOLDILOCKS"
+    else if atrDaily > 0.012
+        atrRegime := "ELEVATED"
+    else if atrDaily < 0.004
+        atrRegime := "LOW"
+    else
+        atrRegime := "MODERATE"
+else if instrument == "EURJPY"
+    if atrDaily >= 0.80 and atrDaily <= 1.40
+        atrRegime := "GOLDILOCKS"
+    else if atrDaily > 1.60
+        atrRegime := "ELEVATED"
+    else if atrDaily < 0.60
+        atrRegime := "LOW"
+    else
+        atrRegime := "MODERATE"
+else if instrument == "USDJPY"
+    if atrDaily >= 0.40 and atrDaily <= 0.80
+        atrRegime := "GOLDILOCKS"
+    else if atrDaily > 1.00
+        atrRegime := "ELEVATED"
+    else if atrDaily < 0.25
+        atrRegime := "LOW"
+    else
+        atrRegime := "MODERATE"
+else if instrument == "GBPUSD"
+    if atrDaily >= 0.006 and atrDaily <= 0.012
+        atrRegime := "GOLDILOCKS"
+    else if atrDaily > 0.015
+        atrRegime := "ELEVATED"
+    else if atrDaily < 0.004
+        atrRegime := "LOW"
+    else
+        atrRegime := "MODERATE"
+else if instrument == "MES"
+    if atrDaily >= 40 and atrDaily <= 65
+        atrRegime := "GOLDILOCKS"
+    else if atrDaily > 80
+        atrRegime := "ELEVATED"
+    else
+        atrRegime := "LOW"
+
+color atrCol = atrRegime == "GOLDILOCKS" or atrRegime == "PRIME" ? color.green : atrRegime == "DEATH ZONE" ? color.red : color.orange
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// MARKET MODE
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+atRecentHigh  = close >= lookback20High * 0.97
+atRecentLow   = close <= lookback20Low  * 1.03
+atrElevated   = atrDaily > atrAvg * 1.10
+atrCompressed = atrDaily < atrAvg * 0.90
+
+bool isDiscoveryMode    = (atRecentHigh or atRecentLow) and atrElevated
+bool is2022Model        = not (atRecentHigh or atRecentLow) and atrCompressed
+string marketMode       = isDiscoveryMode ? "DISCOVERY" : is2022Model ? "2022 MODEL" : "TRANSITIONING"
+bool inConsolidationMode = is2022Model
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// NARRATIVE BIAS â€” Per ICT: "Narrative is not bias"
+// Discovery Mode: narrative = trend direction (multi-day scope)
+// 2022 Model / TRANSITIONING: narrative = sweep direction, 1-hour scope only
+// Premium/discount = BIAS not narrative â€” kept for scoring, not direction
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+int premiumCount = 0
+int discountCount = 0
+if weeklyRangePercent >= 60
+    premiumCount += 2
+else if weeklyRangePercent <= 40
+    discountCount += 2
+if dailyRangePercent >= 60
+    premiumCount += 2
+else if dailyRangePercent <= 40
+    discountCount += 2
+if monthlyRangePercent >= 60
+    premiumCount += 1
+else if monthlyRangePercent <= 40
+    discountCount += 1
+if currentRangePercent >= 60
+    premiumCount += 1
+else if currentRangePercent <= 40
+    discountCount += 1
+
+string pdBias = premiumCount > discountCount ? "SHORT" : discountCount > premiumCount ? "LONG" : "NEUTRAL"
+string narrativeBias = pdBias  // will be updated after trend is calculated
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// DAILY TREND
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+float d1High = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float d2High = request.security(syminfo.tickerid, "D", high[2], barmerge.gaps_off, barmerge.lookahead_on)
+float d1Low  = request.security(syminfo.tickerid, "D", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float d2Low  = request.security(syminfo.tickerid, "D", low[2],  barmerge.gaps_off, barmerge.lookahead_on)
+bool someHH = d1High > d2High
+bool someHL = d1Low  > d2Low
+bool someLH = d1High < d2High
+bool someLL = d1Low  < d2Low
+bool inUptrend   = someHH and someHL
+bool inDowntrend = someLH and someLL
+
+// Narrative per ICT's mode-specific rules â€” calculated after trend vars available
+if isDiscoveryMode
+    narrativeBias := inUptrend ? "LONG" : inDowntrend ? "SHORT" : pdBias
+// else stays as pdBias â€” overridden by effectiveNarrative when sweep fires
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// TIME WINDOWS
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+int currentYear   = year(time,       "America/New_York")
+int currentMonth  = month(time,      "America/New_York")
+int currentDay    = dayofmonth(time, "America/New_York")
+int currentHour   = hour(time,       "America/New_York")
+int currentMinute = minute(time,     "America/New_York")
+
+int asianEntryStart  = timestamp("America/New_York", currentYear, currentMonth, currentDay, 19, 30)
+int asianEntryEnd    = timestamp("America/New_York", currentYear, currentMonth, currentDay, 21, 0)
+bool isAsianEntry    = time >= asianEntryStart and time < asianEntryEnd
+
+bool isLondonEntry = false
+if instrument == "MGC" or isForex
+    int ls = timestamp("America/New_York", currentYear, currentMonth, currentDay, 3, 0)
+    int le = timestamp("America/New_York", currentYear, currentMonth, currentDay, 5, 0)
+    isLondonEntry := time >= ls and time < le
+else if instrument == "MNQ" or instrument == "MES"
+    int ls = timestamp("America/New_York", currentYear, currentMonth, currentDay, 1, 0)
+    int le = timestamp("America/New_York", currentYear, currentMonth, currentDay, 3, 0)
+    isLondonEntry := time >= ls and time < le
+else if instrument == "MCL"
+    int ls = timestamp("America/New_York", currentYear, currentMonth, currentDay, 2, 0)
+    int le = timestamp("America/New_York", currentYear, currentMonth, currentDay, 5, 0)
+    isLondonEntry := time >= ls and time < le
+
+int nyAMStart  = timestamp("America/New_York", currentYear, currentMonth, currentDay, 9, 30)
+int nyAMEnd    = timestamp("America/New_York", currentYear, currentMonth, currentDay, 12, 0)
+bool isNYAMEntry = time >= nyAMStart and time < nyAMEnd
+
+int nyLunchStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 12, 0)
+int nyLunchEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 13, 30)
+bool isNYLunchEntry = time >= nyLunchStart and time < nyLunchEnd
+
+int nyPMEntryStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 13, 30)
+int nyPMEntryEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 16, 0)
+bool isNYPMEntry = time >= nyPMEntryStart and time < nyPMEntryEnd
+
+int deadZoneStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 3, 0)
+int deadZoneEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 4, 0)
+bool inDeadZone   = (instrument == "MNQ" or instrument == "MES") and time >= deadZoneStart and time < deadZoneEnd
+
+int mclDeadStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 5, 0)
+int mclDeadEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 9, 30)
+if instrument == "MCL"
+    inDeadZone := time >= mclDeadStart and time < mclDeadEnd
+
+bool inEntryWindow = false
+if isForex
+    inEntryWindow := isLondonEntry or isNYAMEntry or isNYLunchEntry or isNYPMEntry
+else
+    inEntryWindow := isAsianEntry or isLondonEntry or isNYAMEntry or isNYLunchEntry or isNYPMEntry
+
+// ── AMD MANIPULATION PHASE DETECTION ───────────────────────────────────────────
+// Manipulation = first 30 min of each session's active window. Price typically
+// runs a Judas Swing (fake direction) before true distribution begins.
+// Gate fires when: in manipulation window AND no sweep confirmed yet.
+bool inAsianManip  = time >= asianEntryStart and
+                     time <  timestamp("America/New_York", currentYear, currentMonth, currentDay, 20, 0)
+bool inLondonManip = false
+if instrument == "MGC" or isForex
+    inLondonManip := time >= timestamp("America/New_York", currentYear, currentMonth, currentDay, 3, 0) and
+                     time <  timestamp("America/New_York", currentYear, currentMonth, currentDay, 3, 30)
+else if instrument == "MNQ" or instrument == "MES"
+    inLondonManip := time >= timestamp("America/New_York", currentYear, currentMonth, currentDay, 1, 0) and
+                     time <  timestamp("America/New_York", currentYear, currentMonth, currentDay, 1, 30)
+else if instrument == "MCL"
+    inLondonManip := time >= timestamp("America/New_York", currentYear, currentMonth, currentDay, 2, 0) and
+                     time <  timestamp("America/New_York", currentYear, currentMonth, currentDay, 2, 30)
+bool inNYManip     = time >= nyAMStart and
+                     time <  timestamp("America/New_York", currentYear, currentMonth, currentDay, 10, 0)
+bool inManipulationWindow = inAsianManip or inLondonManip or inNYManip
+
+int  etTimeMinutes     = currentHour * 60 + currentMinute
+bool asianWindow       = etTimeMinutes >= 19 * 60 and etTimeMinutes < 21 * 60
+bool londonWindow      = etTimeMinutes >= 2 * 60  and etTimeMinutes < 5 * 60
+bool nyMorningWindow   = etTimeMinutes >= 9 * 60 + 30 and etTimeMinutes < 11 * 60
+bool nyAfternoonWindow = etTimeMinutes >= 13 * 60 + 30 and etTimeMinutes < 16 * 60
+bool overnightWindow   = etTimeMinutes >= 21 * 60 or etTimeMinutes < 2 * 60
+bool isOvernightEntry  = overnightWindow
+bool inApprovedWindow  = asianWindow or londonWindow or nyMorningWindow or nyAfternoonWindow or overnightWindow
+if overnightWindow
+    inEntryWindow := true
+bool inICTKillZone     = isLondonEntry or nyMorningWindow
+
+bool inFormationWindow = false
+int asianStart  = timestamp("America/New_York", currentYear, currentMonth, currentDay, 19, 0)
+int asianEnd    = timestamp("America/New_York", currentYear, currentMonth, currentDay, 19, 30)
+int londonStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 2, 0)
+int londonEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 2, 30)
+int nyOpenStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 7, 0)
+int nyOpenEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 7, 30)
+int equitiesStart = timestamp("America/New_York", currentYear, currentMonth, currentDay, 9, 30)
+int equitiesEnd   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 10, 0)
+int nyPMStart   = timestamp("America/New_York", currentYear, currentMonth, currentDay, 13, 30)
+int nyPMEnd     = timestamp("America/New_York", currentYear, currentMonth, currentDay, 14, 0)
+bool isAsianFormation    = time >= asianStart    and time < asianEnd
+bool isLondonFormation   = time >= londonStart   and time < londonEnd
+bool isNYOpenFormation   = time >= nyOpenStart   and time < nyOpenEnd
+bool isEquitiesFormation = time >= equitiesStart and time < equitiesEnd
+bool isNYPMFormation     = time >= nyPMStart     and time < nyPMEnd
+inFormationWindow := isAsianFormation or isLondonFormation or isNYOpenFormation or isEquitiesFormation or isNYPMFormation
+string currentFormationWindow = isAsianFormation ? "ASIAN" : isLondonFormation ? "LONDON" : isNYOpenFormation ? "NY OPEN" : isEquitiesFormation ? "EQUITIES" : isNYPMFormation ? "NY PM" : "NONE"
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// LIQUIDITY SWEEP
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+float pdHigh = request.security(syminfo.tickerid, "D", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float pdLow  = request.security(syminfo.tickerid, "D", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+float pwHigh = request.security(syminfo.tickerid, "W", high[1], barmerge.gaps_off, barmerge.lookahead_on)
+float pwLow  = request.security(syminfo.tickerid, "W", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+
+float ndogLevel     = request.security(syminfo.tickerid, "D", open,     barmerge.gaps_off, barmerge.lookahead_on)
+float ndogPrevClose = request.security(syminfo.tickerid, "D", close[1], barmerge.gaps_off, barmerge.lookahead_on)
+float ndogCELevel   = not na(ndogLevel) and not na(ndogPrevClose) and ndogLevel != ndogPrevClose ? (ndogLevel + ndogPrevClose) / 2 : na
+float nwogLevel     = request.security(syminfo.tickerid, "W", open, barmerge.gaps_off, barmerge.lookahead_on)
+
+var float asianSessionHigh = na
+var float asianSessionLow  = na
+bool isAsianBuildWindow = (currentHour == 19 or currentHour == 20)
+if isAsianEntry and not isAsianEntry[1]
+    asianSessionHigh := high
+    asianSessionLow  := low
+if isAsianBuildWindow
+    if not na(asianSessionHigh) and high > asianSessionHigh
+        asianSessionHigh := high
+    if not na(asianSessionLow) and low < asianSessionLow
+        asianSessionLow := low
+
+var float londonSessionHigh = na
+var float londonSessionLow  = na
+bool isLondonBuildWindow = currentHour >= 2 and currentHour < 5
+if isLondonBuildWindow and not isLondonBuildWindow[1]
+    londonSessionHigh := high
+    londonSessionLow  := low
+if isLondonBuildWindow
+    if not na(londonSessionHigh) and high > londonSessionHigh
+        londonSessionHigh := high
+    if not na(londonSessionLow) and low < londonSessionLow
+        londonSessionLow := low
+
+var float nyamSessionHigh = na
+var float nyamSessionLow  = na
+bool isNYAMBuildWindow = (currentHour == 9 and currentMinute >= 30) or currentHour == 10 or currentHour == 11
+if isNYAMBuildWindow and not isNYAMBuildWindow[1]
+    nyamSessionHigh := high
+    nyamSessionLow  := low
+if isNYAMBuildWindow
+    if not na(nyamSessionHigh) and high > nyamSessionHigh
+        nyamSessionHigh := high
+    if not na(nyamSessionLow) and low < nyamSessionLow
+        nyamSessionLow := low
+
+var float lunchSessionHigh = na
+var float lunchSessionLow  = na
+bool isLunchBuildWindow = currentHour == 12 or (currentHour == 13 and currentMinute < 30)
+if isLunchBuildWindow and not isLunchBuildWindow[1]
+    lunchSessionHigh := high
+    lunchSessionLow  := low
+if isLunchBuildWindow
+    if not na(lunchSessionHigh) and high > lunchSessionHigh
+        lunchSessionHigh := high
+    if not na(lunchSessionLow) and low < lunchSessionLow
+        lunchSessionLow := low
+
+var float pmSessionHigh = na
+var float pmSessionLow  = na
+bool isPMBuildWindow = (currentHour == 13 and currentMinute >= 30) or currentHour == 14 or currentHour == 15
+if isPMBuildWindow and not isPMBuildWindow[1]
+    pmSessionHigh := high
+    pmSessionLow  := low
+if isPMBuildWindow
+    if not na(pmSessionHigh) and high > pmSessionHigh
+        pmSessionHigh := high
+    if not na(pmSessionLow) and low < pmSessionLow
+        pmSessionLow := low
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// OTE ZONE â€” ICT Optimal Trade Entry (8:30 AM to 11:00 AM ET)
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+bool inOTEWindow = (currentHour == 8 and currentMinute >= 30) or
+                   (currentHour >= 9 and currentHour < 11) or
+                   (currentHour == 11 and currentMinute == 0)
+
+var bool  otePDHBroken   = false
+var bool  otePDLBroken   = false
+var float oteAnchorLow   = na
+var float oteAnchorHigh  = na
+var float oteAnchorHighB = na
+var float oteAnchorLowB  = na
+var float oteTrackLow    = na
+var float oteTrackHigh   = na
+
+bool atNYOpen930 = currentHour == 9 and currentMinute == 30 and (currentHour[1] != 9 or currentMinute[1] != 30)
+if atNYOpen930
+    otePDHBroken   := false
+    otePDLBroken   := false
+    oteAnchorLow   := na
+    oteAnchorHigh  := na
+    oteAnchorHighB := na
+    oteAnchorLowB  := na
+    oteTrackLow    := low
+    oteTrackHigh   := high
+
+if inOTEWindow and not otePDHBroken and not na(oteTrackLow)
+    oteTrackLow := math.min(oteTrackLow, low)
+if inOTEWindow and not otePDLBroken and not na(oteTrackHigh)
+    oteTrackHigh := math.max(oteTrackHigh, high)
+
+if inOTEWindow and not otePDHBroken and high > pdHigh and not na(oteTrackLow)
+    otePDHBroken  := true
+    oteAnchorLow  := oteTrackLow
+    oteAnchorHigh := high
+if otePDHBroken and inOTEWindow and not na(oteAnchorHigh) and high > oteAnchorHigh
+    oteAnchorHigh := high
+
+if inOTEWindow and not otePDLBroken and low < pdLow and not na(oteTrackHigh)
+    otePDLBroken   := true
+    oteAnchorHighB := oteTrackHigh
+    oteAnchorLowB  := low
+if otePDLBroken and inOTEWindow and not na(oteAnchorLowB) and low < oteAnchorLowB
+    oteAnchorLowB := low
+
+float ote62  = na
+float ote705 = na
+float ote79  = na
+if otePDHBroken and not na(oteAnchorLow) and not na(oteAnchorHigh)
+    float oteRng = oteAnchorHigh - oteAnchorLow
+    ote62  := oteAnchorHigh - oteRng * 0.62
+    ote705 := oteAnchorHigh - oteRng * 0.705
+    ote79  := oteAnchorHigh - oteRng * 0.79
+
+float ote62B  = na
+float ote705B = na
+float ote79B  = na
+if otePDLBroken and not na(oteAnchorHighB) and not na(oteAnchorLowB)
+    float oteRngB = oteAnchorHighB - oteAnchorLowB
+    ote62B  := oteAnchorLowB + oteRngB * 0.62
+    ote705B := oteAnchorLowB + oteRngB * 0.705
+    ote79B  := oteAnchorLowB + oteRngB * 0.79
+
+bool priceInBullishOTE = inOTEWindow and otePDHBroken and not na(ote62) and not na(ote79) and close >= ote79 and close <= ote62
+bool priceInBearishOTE = inOTEWindow and otePDLBroken and not na(ote62B) and not na(ote79B) and close <= ote79B and close >= ote62B
+bool priceInOTEZone = priceInBullishOTE or priceInBearishOTE
+
+var bool liquiditySwept  = false
+var string sweepDirection = "NONE"
+var string sweepSource    = "NONE"
+var float sweepLevelPrice = na
+var int   sweepBarIndex   = na
+
+var float  fpfvgTop             = na
+var float  fpfvgBottom          = na
+var string fpfvgDirection       = "NONE"
+var bool   fpfvgLocked          = false
+var int    fpfvgStep            = 0
+var string fpfvgFormationWindow = "NONE"
+var string step1Time = ""
+var string step2Time = ""
+var string step3Time = ""
+var string step4Time = ""
+
+var float storedBullFVGTop    = na
+var float storedBullFVGBottom = na
+var float storedBearFVGTop    = na
+var float storedBearFVGBottom = na
+var int   storedBullFVGBar    = 0
+var int   storedBearFVGBar    = 0
+var float storedSingleBullTop = na
+var float storedSingleBullBot = na
+var float storedSingleBearTop = na
+var float storedSingleBearBot = na
+var int   storedSingleBullBar = 0
+var int   storedSingleBearBar = 0
+var bool  resetDone           = false
+
+var bool priceWasAbovePDL      = false
+var bool priceWasBelowPDH      = false
+var bool priceWasAbovePWL      = false
+var bool priceWasBelowPWH      = false
+var bool priceWasAboveSwingLow  = false
+var bool priceWasBelowSwingHigh = false
+var bool priceWasAboveAsiaL    = false
+var bool priceWasBelowAsiaH    = false
+var bool priceWasAboveLonL     = false
+var bool priceWasBelowLonH     = false
+var bool priceWasAboveNDOG     = false
+var bool priceWasBelowNDOG     = false
+var bool priceWasAboveNWOG     = false
+var bool priceWasBelowNWOG     = false
+var bool priceWasAbovePML      = false
+var bool priceWasBelowPMH      = false
+var bool priceWasAboveNYAML    = false
+var bool priceWasBelowNYAMH    = false
+var bool priceWasAboveLunchL   = false
+var bool priceWasBelowLunchH   = false
+
+if barstate.isfirst
+    liquiditySwept  := false
+    sweepDirection  := "NONE"
+    sweepSource     := "NONE"
+    sweepLevelPrice := na
+    fpfvgTop        := na
+    fpfvgBottom     := na
+    fpfvgDirection  := "NONE"
+    fpfvgLocked     := false
+    fpfvgStep       := 0
+    fpfvgFormationWindow := "NONE"
+    step1Time := ""
+    step2Time := ""
+    step3Time := ""
+    step4Time := ""
+    storedBullFVGTop    := na
+    storedBullFVGBottom := na
+    storedBearFVGTop    := na
+    storedBearFVGBottom := na
+    storedBullFVGBar    := 0
+    storedBearFVGBar    := 0
+    storedSingleBullTop := na
+    storedSingleBullBot := na
+    storedSingleBearTop := na
+    storedSingleBearBot := na
+    storedSingleBullBar := 0
+    storedSingleBearBar := 0
+    priceWasAbovePDL := false
+    priceWasBelowPDH := false
+    priceWasAbovePWL := false
+    priceWasBelowPWH := false
+    priceWasAboveSwingLow  := false
+    priceWasBelowSwingHigh := false
+    priceWasAboveAsiaL := false
+    priceWasBelowAsiaH := false
+    priceWasAboveLonL  := false
+    priceWasBelowLonH  := false
+    priceWasAboveNDOG  := false
+    priceWasBelowNDOG  := false
+    priceWasAboveNWOG  := false
+    priceWasBelowNWOG  := false
+    priceWasAbovePML   := false
+    priceWasBelowPMH   := false
+    priceWasAboveNYAML := false
+    priceWasBelowNYAMH := false
+    priceWasAboveLunchL := false
+    priceWasBelowLunchH := false
+
+int sessionBoundaryTime = timestamp("America/New_York", currentYear, currentMonth, currentDay, 18, 0)
+bool sessionBoundary = time >= sessionBoundaryTime and time < sessionBoundaryTime + 60000
+
+if sessionBoundary and not resetDone
+    liquiditySwept  := false
+    sweepDirection  := "NONE"
+    sweepSource     := "NONE"
+    sweepLevelPrice := na
+    fpfvgTop        := na
+    fpfvgBottom     := na
+    fpfvgDirection  := "NONE"
+    fpfvgLocked     := false
+    fpfvgStep       := 0
+    fpfvgFormationWindow := "NONE"
+    step1Time := ""
+    step2Time := ""
+    step3Time := ""
+    step4Time := ""
+    storedBullFVGTop    := na
+    storedBullFVGBottom := na
+    storedBearFVGTop    := na
+    storedBearFVGBottom := na
+    storedBullFVGBar    := 0
+    storedBearFVGBar    := 0
+    storedSingleBullTop := na
+    storedSingleBullBot := na
+    storedSingleBearTop := na
+    storedSingleBearBot := na
+    storedSingleBullBar := 0
+    storedSingleBearBar := 0
+    priceWasAbovePDL       := false
+    priceWasBelowPDH       := false
+    priceWasAbovePWL       := false
+    priceWasBelowPWH       := false
+    priceWasAboveSwingLow  := false
+    priceWasBelowSwingHigh := false
+    priceWasAboveAsiaL := false
+    priceWasBelowAsiaH := false
+    priceWasAboveLonL  := false
+    priceWasBelowLonH  := false
+    priceWasAboveNDOG  := false
+    priceWasBelowNDOG  := false
+    priceWasAboveNWOG  := false
+    priceWasBelowNWOG  := false
+    priceWasAbovePML   := false
+    priceWasBelowPMH   := false
+    priceWasAboveNYAML := false
+    priceWasBelowNYAMH := false
+    priceWasAboveLunchL := false
+    priceWasBelowLunchH := false
+    otePDHBroken   := false
+    otePDLBroken   := false
+    oteAnchorLow   := na
+    oteAnchorHigh  := na
+    oteAnchorHighB := na
+    oteAnchorLowB  := na
+    oteTrackLow    := na
+    oteTrackHigh   := na
+    resetDone := true
+
+if not sessionBoundary
+    resetDone := false
+
+if close > pdLow
+    priceWasAbovePDL := true
+if close < pdHigh
+    priceWasBelowPDH := true
+if close > pwLow
+    priceWasAbovePWL := true
+if close < pwHigh
+    priceWasBelowPWH := true
+if not na(pmSessionLow)  and close > pmSessionLow
+    priceWasAbovePML := true
+if not na(pmSessionHigh) and close < pmSessionHigh
+    priceWasBelowPMH := true
+if not na(nyamSessionLow)  and close > nyamSessionLow
+    priceWasAboveNYAML := true
+if not na(nyamSessionHigh) and close < nyamSessionHigh
+    priceWasBelowNYAMH := true
+if not na(lunchSessionLow)  and close > lunchSessionLow
+    priceWasAboveLunchL := true
+if not na(lunchSessionHigh) and close < lunchSessionHigh
+    priceWasBelowLunchH := true
+if not na(asianSessionLow)  and close > asianSessionLow
+    priceWasAboveAsiaL := true
+if not na(asianSessionHigh) and close < asianSessionHigh
+    priceWasBelowAsiaH := true
+if not na(londonSessionLow)  and close > londonSessionLow
+    priceWasAboveLonL := true
+if not na(londonSessionHigh) and close < londonSessionHigh
+    priceWasBelowLonH := true
+if not na(ndogLevel) and close > ndogLevel
+    priceWasAboveNDOG := true
+if not na(ndogLevel) and close < ndogLevel
+    priceWasBelowNDOG := true
+if not na(nwogLevel) and close > nwogLevel
+    priceWasAboveNWOG := true
+if not na(nwogLevel) and close < nwogLevel
+    priceWasBelowNWOG := true
+
+float swingHigh = ta.highest(high, 5)
+float swingLow  = ta.lowest(low,  5)
+if close > swingLow
+    priceWasAboveSwingLow := true
+if close < swingHigh
+    priceWasBelowSwingHigh := true
+
+if not liquiditySwept
+    if not na(pmSessionLow) and low < pmSessionLow and priceWasAbovePML
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "PM_LOW"
+        sweepLevelPrice := pmSessionLow
+    else if not na(pmSessionHigh) and high > pmSessionHigh and priceWasBelowPMH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "PM_HIGH"
+        sweepLevelPrice := pmSessionHigh
+    else if not na(asianSessionLow) and low < asianSessionLow and priceWasAboveAsiaL
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "ASIAN_LOW"
+        sweepLevelPrice := asianSessionLow
+    else if not na(asianSessionHigh) and high > asianSessionHigh and priceWasBelowAsiaH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "ASIAN_HIGH"
+        sweepLevelPrice := asianSessionHigh
+    else if not na(londonSessionLow) and low < londonSessionLow and priceWasAboveLonL
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "LONDON_LOW"
+        sweepLevelPrice := londonSessionLow
+    else if not na(londonSessionHigh) and high > londonSessionHigh and priceWasBelowLonH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "LONDON_HIGH"
+        sweepLevelPrice := londonSessionHigh
+    else if not na(nyamSessionLow) and low < nyamSessionLow and priceWasAboveNYAML
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "NYAM_LOW"
+        sweepLevelPrice := nyamSessionLow
+    else if not na(nyamSessionHigh) and high > nyamSessionHigh and priceWasBelowNYAMH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "NYAM_HIGH"
+        sweepLevelPrice := nyamSessionHigh
+    else if not na(lunchSessionLow) and low < lunchSessionLow and priceWasAboveLunchL
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "LUNCH_LOW"
+        sweepLevelPrice := lunchSessionLow
+    else if not na(lunchSessionHigh) and high > lunchSessionHigh and priceWasBelowLunchH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "LUNCH_HIGH"
+        sweepLevelPrice := lunchSessionHigh
+    else if not na(ndogLevel) and low < ndogLevel and priceWasAboveNDOG
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "NDOG"
+        sweepLevelPrice := ndogLevel
+    else if not na(ndogLevel) and high > ndogLevel and priceWasBelowNDOG
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "NDOG"
+        sweepLevelPrice := ndogLevel
+    else if not na(nwogLevel) and low < nwogLevel and priceWasAboveNWOG
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "NWOG"
+        sweepLevelPrice := nwogLevel
+    else if not na(nwogLevel) and high > nwogLevel and priceWasBelowNWOG
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "NWOG"
+        sweepLevelPrice := nwogLevel
+    else if high > pdHigh and priceWasBelowPDH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "PDH"
+        sweepLevelPrice := pdHigh
+    else if high > pwHigh and priceWasBelowPWH
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "PWH"
+        sweepLevelPrice := pwHigh
+    else if low < pdLow and priceWasAbovePDL
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "PDL"
+        sweepLevelPrice := pdLow
+    else if low < pwLow and priceWasAbovePWL
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "PWL"
+        sweepLevelPrice := pwLow
+    else if high > swingHigh and priceWasBelowSwingHigh
+        liquiditySwept  := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "SWH"
+        sweepLevelPrice := swingHigh
+    else if low < swingLow and priceWasAboveSwingLow
+        liquiditySwept  := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "SWL"
+        sweepLevelPrice := swingLow
+
+if liquiditySwept and not na(sweepLevelPrice)
+    if sweepDirection == "BUY_SIDE" and close < sweepLevelPrice
+        liquiditySwept  := false
+        sweepDirection  := "NONE"
+        sweepSource     := "NONE"
+        sweepLevelPrice := na
+        fpfvgTop        := na
+        fpfvgBottom     := na
+        fpfvgDirection  := "NONE"
+        fpfvgLocked     := false
+        fpfvgStep       := 0
+        fpfvgFormationWindow := "NONE"
+        step1Time := ""
+        step2Time := ""
+        step3Time := ""
+        step4Time := ""
+        priceWasBelowPDH       := false
+        priceWasBelowPWH       := false
+        priceWasBelowSwingHigh := false
+    else if sweepDirection == "SELL_SIDE" and close > sweepLevelPrice
+        liquiditySwept  := false
+        sweepDirection  := "NONE"
+        sweepSource     := "NONE"
+        sweepLevelPrice := na
+        fpfvgTop        := na
+        fpfvgBottom     := na
+        fpfvgDirection  := "NONE"
+        fpfvgLocked     := false
+        fpfvgStep       := 0
+        fpfvgFormationWindow := "NONE"
+        step1Time := ""
+        step2Time := ""
+        step3Time := ""
+        step4Time := ""
+        priceWasAbovePDL      := false
+        priceWasAbovePWL      := false
+        priceWasAboveSwingLow := false
+
+if inFormationWindow and not inFormationWindow[1]
+    fpfvgTop        := na
+    fpfvgBottom     := na
+    fpfvgDirection  := "NONE"
+    fpfvgLocked     := false
+    fpfvgStep       := 0
+    fpfvgFormationWindow := "NONE"
+    step1Time := ""
+    step2Time := ""
+    step3Time := ""
+    step4Time := ""
+    storedBullFVGTop    := na
+    storedBullFVGBottom := na
+    storedBearFVGTop    := na
+    storedBearFVGBottom := na
+    storedBullFVGBar    := 0
+    storedBearFVGBar    := 0
+    storedSingleBullTop := na
+    storedSingleBullBot := na
+    storedSingleBearTop := na
+    storedSingleBearBot := na
+    storedSingleBullBar := 0
+    storedSingleBearBar := 0
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// FVG DETECTION
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+if liquiditySwept and not liquiditySwept[1]
+    sweepBarIndex := bar_index
+if not liquiditySwept
+    sweepBarIndex := na
+
+float sweepAgeBars  = not na(sweepBarIndex) ? float(bar_index - sweepBarIndex) : na
+float sweepAgeHours = not na(sweepAgeBars)  ? sweepAgeBars * timeframe.in_seconds(timeframe.period) / 3600.0 : na
+bool  staleSweep    = liquiditySwept and not na(sweepAgeHours) and sweepAgeHours > sweepMaxAge
+
+float minFVGGap = instrument == "MGC" ? 3.0 : instrument == "MNQ" ? 15.0 : instrument == "MCL" ? 0.15 : instrument == "MES" ? 3.0 : 3.0
+
+bullishFVG = low[2] > high[0] and (low[2] - high[0]) >= minFVGGap and close[1] < open[1]
+bearishFVG = high[2] < low[0] and (low[0] - high[2]) >= minFVGGap and close[1] > open[1]
+
+float candleBody       = math.abs(close - open)
+float atrBodyThreshold = atrDaily * 0.20
+
+bool singleCandleSIBI = close < open and candleBody >= atrBodyThreshold
+bool singleCandleBISI = close > open and candleBody >= atrBodyThreshold
+
+if inFormationWindow and singleCandleSIBI and na(storedSingleBullTop)
+    storedSingleBullTop := high
+    storedSingleBullBot := low
+    storedSingleBullBar := bar_index
+
+if inFormationWindow and singleCandleBISI and na(storedSingleBearTop)
+    storedSingleBearTop := high
+    storedSingleBearBot := low
+    storedSingleBearBar := bar_index
+
+if inFormationWindow and bullishFVG and na(storedBullFVGTop)
+    storedBullFVGTop    := low[2]
+    storedBullFVGBottom := high[0]
+    storedBullFVGBar    := bar_index
+
+if inFormationWindow and bearishFVG and na(storedBearFVGTop)
+    storedBearFVGTop    := low[0]
+    storedBearFVGBottom := high[2]
+    storedBearFVGBar    := bar_index
+
+bool directionalConflict = (weeklyBias == "BULLISH" and narrativeBias == "SHORT") or (weeklyBias == "BEARISH" and narrativeBias == "LONG")
+
+bool sweepAllowsBull = not liquiditySwept or sweepDirection == "SELL_SIDE"
+bool sweepAllowsBear = not liquiditySwept or sweepDirection == "BUY_SIDE"
+
+string effectiveNarrative = narrativeBias
+if liquiditySwept
+    if sweepDirection == "BUY_SIDE"
+        if isDiscoveryMode and inUptrend
+            effectiveNarrative := narrativeBias
+        else
+            effectiveNarrative := "SHORT"
+    else if sweepDirection == "SELL_SIDE"
+        if isDiscoveryMode and inDowntrend
+            effectiveNarrative := narrativeBias
+        else
+            effectiveNarrative := "LONG"
+
+bool activeDirectionalConflict = directionalConflict and not liquiditySwept
+
+bool discoveryBullishShortsBlockedTP = isDiscoveryMode and inUptrend and effectiveNarrative == "SHORT"
+bool discoveryBearishLongsBlockedTP  = isDiscoveryMode and inDowntrend and effectiveNarrative == "LONG"
+if discoveryBullishShortsBlockedTP
+    effectiveNarrative := "NEUTRAL"
+if discoveryBearishLongsBlockedTP
+    effectiveNarrative := "NEUTRAL"
+bool discoveryDirectionBlock = (isDiscoveryMode and inUptrend and fpfvgDirection == "BEARISH") or (isDiscoveryMode and inDowntrend and fpfvgDirection == "BULLISH")
+
+if fpfvgDirection == "NONE" and not fpfvgLocked and not activeDirectionalConflict and (not na(storedBullFVGTop) or not na(storedBearFVGTop) or not na(storedSingleBullTop) or not na(storedSingleBearTop))
+    if effectiveNarrative == "LONG" and sweepAllowsBull
+        if not na(storedBullFVGTop)
+            fpfvgTop := storedBullFVGTop
+            fpfvgBottom := storedBullFVGBottom
+            fpfvgDirection := "BULLISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            step1Time := str.tostring(hour(time[bar_index - storedBullFVGBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - storedBullFVGBar], "America/New_York"))
+            fpfvgLocked := true
+        else if not na(storedSingleBullTop)
+            fpfvgTop := storedSingleBullTop
+            fpfvgBottom := storedSingleBullBot
+            fpfvgDirection := "BULLISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            step1Time := str.tostring(hour(time[bar_index - storedSingleBullBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - storedSingleBullBar], "America/New_York"))
+            fpfvgLocked := true
+    else if effectiveNarrative == "SHORT" and sweepAllowsBear
+        if not na(storedBearFVGTop)
+            fpfvgTop := storedBearFVGTop
+            fpfvgBottom := storedBearFVGBottom
+            fpfvgDirection := "BEARISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            step1Time := str.tostring(hour(time[bar_index - storedBearFVGBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - storedBearFVGBar], "America/New_York"))
+            fpfvgLocked := true
+        else if not na(storedSingleBearTop)
+            fpfvgTop := storedSingleBearTop
+            fpfvgBottom := storedSingleBearBot
+            fpfvgDirection := "BEARISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            step1Time := str.tostring(hour(time[bar_index - storedSingleBearBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - storedSingleBearBar], "America/New_York"))
+            fpfvgLocked := true
+    else
+        bool hasBull3 = not na(storedBullFVGTop)
+        bool hasBear3 = not na(storedBearFVGTop)
+        bool hasBull1 = not na(storedSingleBullTop)
+        bool hasBear1 = not na(storedSingleBearTop)
+        int bestBullBar = hasBull3 ? storedBullFVGBar : (hasBull1 ? storedSingleBullBar : 999999)
+        int bestBearBar = hasBear3 ? storedBearFVGBar : (hasBear1 ? storedSingleBearBar : 999999)
+        if bestBullBar <= bestBearBar and bestBullBar != 999999 and sweepAllowsBull
+            if hasBull3
+                fpfvgTop := storedBullFVGTop
+                fpfvgBottom := storedBullFVGBottom
+            else
+                fpfvgTop := storedSingleBullTop
+                fpfvgBottom := storedSingleBullBot
+            fpfvgDirection := "BULLISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            int usedBar = hasBull3 ? storedBullFVGBar : storedSingleBullBar
+            step1Time := str.tostring(hour(time[bar_index - usedBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - usedBar], "America/New_York"))
+            fpfvgLocked := true
+        else if bestBearBar < bestBullBar and bestBearBar != 999999 and sweepAllowsBear
+            if hasBear3
+                fpfvgTop := storedBearFVGTop
+                fpfvgBottom := storedBearFVGBottom
+            else
+                fpfvgTop := storedSingleBearTop
+                fpfvgBottom := storedSingleBearBot
+            fpfvgDirection := "BEARISH"
+            fpfvgFormationWindow := currentFormationWindow
+            fpfvgStep := 1
+            int usedBar = hasBear3 ? storedBearFVGBar : storedSingleBearBar
+            step1Time := str.tostring(hour(time[bar_index - usedBar], "America/New_York")) + ":" + str.format("{0,number,00}", minute(time[bar_index - usedBar], "America/New_York"))
+            fpfvgLocked := true
+
+if fpfvgStep == 1 and not na(fpfvgTop) and not na(fpfvgBottom)
+    if fpfvgDirection == "BULLISH" and close < fpfvgBottom
+        fpfvgStep := 2
+        step2Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+        if not liquiditySwept
+            liquiditySwept  := true
+            sweepDirection  := "SELL_SIDE"
+            sweepSource     := "FPFVG"
+            sweepLevelPrice := fpfvgBottom
+    else if fpfvgDirection == "BEARISH" and close > fpfvgTop
+        fpfvgStep := 2
+        step2Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+        if not liquiditySwept
+            liquiditySwept  := true
+            sweepDirection  := "BUY_SIDE"
+            sweepSource     := "FPFVG"
+            sweepLevelPrice := fpfvgTop
+
+var bool fpfvgInverted = false
+
+if fpfvgStep == 2 and not fpfvgInverted and not na(fpfvgTop) and not na(fpfvgBottom)
+    if fpfvgDirection == "BEARISH" and close < fpfvgBottom
+        fpfvgDirection  := "BULLISH"
+        fpfvgInverted   := true
+        sweepDirection  := "SELL_SIDE"
+        sweepSource     := "IFVG"
+        sweepLevelPrice := fpfvgBottom
+    else if fpfvgDirection == "BULLISH" and close > fpfvgTop
+        fpfvgDirection  := "BEARISH"
+        fpfvgInverted   := true
+        sweepDirection  := "BUY_SIDE"
+        sweepSource     := "IFVG"
+        sweepLevelPrice := fpfvgTop
+
+if fpfvgStep == 0
+    fpfvgInverted := false
+
+if fpfvgStep == 2 and not na(fpfvgTop) and not na(fpfvgBottom)
+    if fpfvgDirection == "BULLISH" and close > fpfvgBottom and close < fpfvgTop
+        fpfvgStep := 3
+        step3Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+    else if fpfvgDirection == "BEARISH" and close < fpfvgTop and close > fpfvgBottom
+        fpfvgStep := 3
+        step3Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+
+if fpfvgStep == 3 and inEntryWindow and not na(fpfvgTop) and not na(fpfvgBottom)
+    if fpfvgDirection == "BULLISH" and close > fpfvgBottom and close[1] <= fpfvgBottom
+        fpfvgStep := 4
+        step4Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+    else if fpfvgDirection == "BEARISH" and close < fpfvgTop and close[1] >= fpfvgTop
+        fpfvgStep := 4
+        step4Time := str.tostring(currentHour) + ":" + str.format("{0,number,00}", currentMinute)
+
+bool hasFPFVG     = fpfvgDirection != "NONE"
+bool fpfvgComplete = fpfvgStep == 4
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// NEAR LEVEL + GAP OVERLAP (for quality score)
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+float proximityTolerance = instrument == "MNQ" ? 25.0 : instrument == "MES" ? 10.0 : instrument == "MGC" ? 10.0 : instrument == "MCL" ? 5.0 : instrument == "EURUSD" ? 0.0008 : instrument == "GBPUSD" ? 0.0008 : instrument == "EURJPY" ? 0.08 : instrument == "USDJPY" ? 0.08 : 5.0
+
+var array<float> nwogHighs = array.new_float(5, na)
+var array<float> nwogLows  = array.new_float(5, na)
+var array<float> nwogCE    = array.new_float(5, na)
+var array<int>   nwogWeek  = array.new_int(5, na)
+
+isFriday5PM  = dayofweek == dayofweek.friday and hour == 17 and minute == 0
+isSunday6PM  = dayofweek == dayofweek.sunday and hour == 18 and minute == 0
+
+int currentDOW = dayofweek(time, "America/New_York")
+bool isDistributionDay = currentDOW == dayofweek.friday
+int effectiveMinQuality = isDistributionDay ? math.max(minQualityAlert, 8) : minQualityAlert
+var float fridayClose = na
+if isFriday5PM
+    fridayClose := close
+if isSunday6PM and not na(fridayClose)
+    gH = math.max(fridayClose, open)
+    gL = math.min(fridayClose, open)
+    array.pop(nwogHighs)
+    array.pop(nwogLows)
+    array.pop(nwogCE)
+    array.pop(nwogWeek)
+    array.unshift(nwogHighs, gH)
+    array.unshift(nwogLows, gL)
+    array.unshift(nwogCE, (gH+gL)/2)
+    array.unshift(nwogWeek, weekofyear)
+    fridayClose := na
+
+var string nearLevel      = "NONE"
+var float  nearLevelPrice = na
+nearLevel      := "NONE"
+nearLevelPrice := na
+
+for i = 0 to array.size(nwogHighs) - 1
+    if not na(array.get(nwogHighs, i))
+        nwogCE_val = array.get(nwogCE, i)
+        if math.abs(close - nwogCE_val) < proximityTolerance
+            nearLevel      := "Week " + str.tostring(array.get(nwogWeek, i)) + " NWOG CE"
+            nearLevelPrice := nwogCE_val
+            break
+
+float gapQualityBoost = 0.0
+if hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom)
+    for i = 0 to array.size(nwogHighs) - 1
+        if not na(array.get(nwogHighs, i))
+            ce = array.get(nwogCE, i)
+            if fpfvgTop >= ce - 2.0 and fpfvgBottom <= ce + 2.0
+                gapQualityBoost := 3.0
+                break
+// -- SETUP GATE VARS (v23.2) ---------------------------------------------------
+int   g_et_h   = hour(time, "America/New_York")
+bool  g1_dead  = inp_hourGates and ((g_et_h == 1) or (g_et_h >= 17 and g_et_h <= 18) or (g_et_h >= 21 and g_et_h <= 22))
+bool  g1_elite = inp_hourGates and ((g_et_h == 3) or (g_et_h >= 8  and g_et_h <= 9)  or  g_et_h == 20)
+float re60_R   = re60_h - re60_l
+float re60_thr = re60_R * 0.25
+bool  g2_valid = inp_rangeEx and re60_R > 0
+bool  g2_near  = g2_valid and ((close >= re60_h - re60_thr) or (close <= re60_l + re60_thr))
+bool  g3_nyaft = inp_nyAft and (g_et_h >= 13 and g_et_h <= 15)
+bool  g3_fvg   = inp_nyAft and (g_et_h >= 13)
+
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// QUALITY SCORE â€” IDENTICAL TO CONTEXT PANEL
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+bool anyFVG          = bullishFVG or bearishFVG
+bool notInEquilibrium = weeklyRangePercent < 45 or weeklyRangePercent > 55
+bool notInNoMansLand  = not ((weeklyRangePercent >= 45 and weeklyRangePercent <= 55) and not isDiscoveryMode)
+bool atrOK            = atrRegime != "DEATH ZONE"
+
+float qualityScore = 0.0
+if biasAligned
+    qualityScore += inConsolidationMode ? 1.0 : 2.0
+if notInEquilibrium
+    qualityScore += 1.0
+if atrOK
+    qualityScore += 1.0
+if not inDeadZone
+    qualityScore += 1.0
+if nearLevel != "NONE"
+    qualityScore += str.contains(nearLevel, "CE") ? 3.0 : 1.0
+if anyFVG
+    qualityScore += 2.0
+if hasFPFVG
+    qualityScore += 1.0
+if fpfvgComplete
+    qualityScore += 2.0
+if hasFPFVG
+    qualityScore += gapQualityBoost
+if hasFPFVG
+    if (fpfvgDirection == "BULLISH" and inUptrend) or (fpfvgDirection == "BEARISH" and inDowntrend)
+        qualityScore += 1.0
+    else if (fpfvgDirection == "BULLISH" and inDowntrend) or (fpfvgDirection == "BEARISH" and inUptrend)
+        qualityScore -= 1.0
+if priceInOTEZone
+    qualityScore += 1.0
+if inICTKillZone
+    qualityScore += 1.0
+
+// Setup Gate score adjustments (v23.2)
+if g1_elite
+    qualityScore += 1.0
+if g2_valid
+    qualityScore += g2_near ? 2.0 : -1.0
+if g3_fvg and hasFPFVG
+    qualityScore -= 2.0
+
+int qualityScoreNormalized = math.min(math.max(math.round(qualityScore), 0), 10)
+plot(qualityScoreNormalized, title="TP Quality Score", display=display.data_window, color=color.new(color.fuchsia, 100))
+bool overnightOnly      = overnightWindow and not asianWindow and not londonWindow and not nyMorningWindow and not nyAfternoonWindow and not isNYLunchEntry
+bool overnightQualityOK = not overnightOnly or qualityScoreNormalized >= 9
+
+f_bullStreak() =>
+    int n = 0
+    for i = 1 to 10
+        if close[i] > open[i]
+            n += 1
+        else
+            break
+    n
+
+f_bearStreak() =>
+    int n = 0
+    for i = 1 to 10
+        if close[i] < open[i]
+            n += 1
+        else
+            break
+    n
+
+int  bullishStreak   = request.security(syminfo.tickerid, "D", f_bullStreak(), barmerge.gaps_off, barmerge.lookahead_on)
+int  bearishStreak   = request.security(syminfo.tickerid, "D", f_bearStreak(), barmerge.gaps_off, barmerge.lookahead_on)
+bool strongBullTrend  = bullishStreak >= 5
+bool extremeBullTrend = bullishStreak >= 7
+bool strongBearTrend  = bearishStreak >= 5
+bool extremeBearTrend = bearishStreak >= 7
+
+float weeklyOpen        = request.security(syminfo.tickerid, "W", open,  barmerge.gaps_off, barmerge.lookahead_on)
+float weeklyClose       = request.security(syminfo.tickerid, "W", close, barmerge.gaps_off, barmerge.lookahead_on)
+bool  weeklyBullish     = weeklyClose > weeklyOpen
+bool  weeklyBearish     = weeklyClose < weeklyOpen
+bool  weeklyCounterTrend = (weeklyBullish and fpfvgDirection == "BEARISH") or (weeklyBearish and fpfvgDirection == "BULLISH")
+
+float dailyOpenToday    = request.security(syminfo.tickerid, "D", open,  barmerge.gaps_off, barmerge.lookahead_on)
+bool  dailyBullishNow   = close > dailyOpenToday
+bool  dailyBearishNow   = close < dailyOpenToday
+bool  counterDailyShort = dailyBullishNow and fpfvgDirection == "BEARISH"
+bool  counterDailyLong  = dailyBearishNow and fpfvgDirection == "BULLISH"
+
+float tpLiqTol    = instrument == "MCL" ? 0.20 : instrument == "MGC" ? 4.0 : instrument == "MNQ" ? 20.0 : instrument == "MES" ? 4.0 : 0.0010
+float tpBlockDist = instrument == "MCL" ? 1.50 : instrument == "MGC" ? 15.0 : instrument == "MNQ" ? 150.0 : instrument == "MES" ? 15.0 : 0.0050
+
+bool  tpSellBelow = false
+float tpSellLevel = na
+if not na(pmSessionLow) and pmSessionLow < close and not (liquiditySwept and sweepSource == "PM_LOW")
+    if na(tpSellLevel) or pmSessionLow > tpSellLevel
+        tpSellLevel := pmSessionLow
+        tpSellBelow := true
+if not na(asianSessionLow) and asianSessionLow < close and not (liquiditySwept and sweepSource == "ASIAN_LOW")
+    if na(tpSellLevel) or asianSessionLow > tpSellLevel
+        tpSellLevel := asianSessionLow
+        tpSellBelow := true
+if not na(londonSessionLow) and londonSessionLow < close and not (liquiditySwept and sweepSource == "LONDON_LOW")
+    if na(tpSellLevel) or londonSessionLow > tpSellLevel
+        tpSellLevel := londonSessionLow
+        tpSellBelow := true
+
+bool  tpBuyAbove = false
+float tpBuyLevel = na
+if not na(pmSessionHigh) and pmSessionHigh > close and not (liquiditySwept and sweepSource == "PM_HIGH")
+    if na(tpBuyLevel) or pmSessionHigh < tpBuyLevel
+        tpBuyLevel := pmSessionHigh
+        tpBuyAbove := true
+if not na(asianSessionHigh) and asianSessionHigh > close and not (liquiditySwept and sweepSource == "ASIAN_HIGH")
+    if na(tpBuyLevel) or asianSessionHigh < tpBuyLevel
+        tpBuyLevel := asianSessionHigh
+        tpBuyAbove := true
+if not na(londonSessionHigh) and londonSessionHigh > close and not (liquiditySwept and sweepSource == "LONDON_HIGH")
+    if na(tpBuyLevel) or londonSessionHigh < tpBuyLevel
+        tpBuyLevel := londonSessionHigh
+        tpBuyAbove := true
+
+float distanceToBuySide  = not na(tpBuyLevel)  ? math.abs(close - tpBuyLevel)  : na
+float distanceToSellSide = not na(tpSellLevel) ? math.abs(close - tpSellLevel) : na
+bool  buySideCloser  = not na(distanceToBuySide) and not na(distanceToSellSide) and distanceToBuySide  < distanceToSellSide
+bool  sellSideCloser = not na(distanceToBuySide) and not na(distanceToSellSide) and distanceToSellSide < distanceToBuySide
+bool  liquidityMismatchShort = buySideCloser  and fpfvgDirection == "BEARISH"
+bool  liquidityMismatchLong  = sellSideCloser and fpfvgDirection == "BULLISH"
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ENTRY / STOP / TARGETS
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+float maxDist = instrument == "MGC" ? 5.0 : instrument == "MCL" ? 0.60 : instrument == "MES" ? 20.0 : instrument == "EURUSD" ? 0.0020 : instrument == "EURJPY" ? 0.30 : instrument == "USDJPY" ? 0.30 : instrument == "GBPUSD" ? 0.0020 : 100.0
+float entryOffset = instrument == "MCL" ? 0.05 : instrument == "EURUSD" ? 0.0002 : instrument == "EURJPY" ? 0.03 : instrument == "USDJPY" ? 0.03 : instrument == "GBPUSD" ? 0.0002 : 2.0
+
+float entryPrice = na
+float stopLoss   = na
+float target1    = na
+float target2    = na
+
+bool mclLongsOnly = instrument == "MCL"
+bool tradeBlocked = discoveryDirectionBlock or (mclLongsOnly and fpfvgDirection == "BEARISH")
+
+if fpfvgComplete and not na(fpfvgTop) and not na(fpfvgBottom) and not tradeBlocked
+    if fpfvgDirection == "BULLISH"
+        entryPrice := fpfvgBottom + entryOffset
+        float rawStop = instrument == "MCL" ? fpfvgBottom - 0.30 : fpfvgBottom - atrDaily * 0.15
+        stopLoss := math.min(rawStop, entryPrice - 0.10)
+        bool tooFar = close > entryPrice + maxDist or close < fpfvgBottom - maxDist
+        if tooFar
+            entryPrice := na
+            stopLoss   := na
+        if not na(entryPrice)
+            if instrument == "MNQ"
+                target1 := entryPrice < quad25 ? quad25 : entryPrice < quad50 ? quad50 : entryPrice < quad75 ? quad75 : entryPrice + 125
+                target2 := target1 == quad25 ? quad50 : target1 == quad50 ? quad75 : target1 == quad75 ? quad100 : target1 + 75
+            else if instrument == "MES"
+                target1 := entryPrice < quad25 ? quad25 : entryPrice < quad50 ? quad50 : entryPrice < quad75 ? quad75 : entryPrice + 25
+                target2 := target1 == quad25 ? quad50 : target1 == quad50 ? quad75 : target1 == quad75 ? quad100 : target1 + 15
+            else if instrument == "MGC"
+                target1 := entryPrice + 45
+                target2 := entryPrice + 90
+            else if instrument == "MCL"
+                target1 := entryPrice + 1.00
+                target2 := entryPrice + 2.00
+            else if instrument == "EURUSD"
+                target1 := entryPrice + 0.0030
+                target2 := entryPrice + 0.0050
+            else if instrument == "EURJPY"
+                target1 := entryPrice + 0.40
+                target2 := entryPrice + 0.70
+            else if instrument == "GBPUSD"
+                target1 := entryPrice + 0.0030
+                target2 := entryPrice + 0.0050
+            else if instrument == "USDJPY"
+                target1 := entryPrice + 0.40
+                target2 := entryPrice + 0.70
+    else
+        entryPrice := fpfvgTop - entryOffset
+        float rawStopShort = instrument == "MCL" ? fpfvgTop + 0.30 : fpfvgTop + atrDaily * 0.15
+        stopLoss := math.max(rawStopShort, entryPrice + 0.10)
+        bool tooFar = close < entryPrice - maxDist or close > fpfvgTop + maxDist
+        if tooFar
+            entryPrice := na
+            stopLoss   := na
+        if not na(entryPrice)
+            if instrument == "MNQ"
+                target1 := entryPrice > quad75 ? quad75 : entryPrice > quad50 ? quad50 : entryPrice > quad25 ? quad25 : entryPrice - 125
+                target2 := target1 == quad75 ? quad50 : target1 == quad50 ? quad25 : target1 == quad25 ? quad0 : target1 - 75
+            else if instrument == "MES"
+                target1 := entryPrice > quad75 ? quad75 : entryPrice > quad50 ? quad50 : entryPrice > quad25 ? quad25 : entryPrice - 25
+                target2 := target1 == quad75 ? quad50 : target1 == quad50 ? quad25 : target1 == quad25 ? quad0 : target1 - 15
+            else if instrument == "MGC"
+                target1 := entryPrice - 45
+                target2 := entryPrice - 90
+            else if instrument == "MCL"
+                target1 := entryPrice - 1.00
+                target2 := entryPrice - 2.00
+            else if instrument == "EURUSD"
+                target1 := entryPrice - 0.0030
+                target2 := entryPrice - 0.0050
+            else if instrument == "EURJPY"
+                target1 := entryPrice - 0.40
+                target2 := entryPrice - 0.70
+            else if instrument == "GBPUSD"
+                target1 := entryPrice - 0.0030
+                target2 := entryPrice - 0.0050
+            else if instrument == "USDJPY"
+                target1 := entryPrice - 0.40
+                target2 := entryPrice - 0.70
+
+// NDOG / NWOG CE override Ã¯Â¿Â½ use nearest CE between entry and quad target as T1
+if not na(entryPrice) and not na(target1)
+    float bestCE = na
+    if fpfvgDirection == "BULLISH"
+        if not na(ndogCELevel) and ndogCELevel > entryPrice and ndogCELevel < target1
+            bestCE := ndogCELevel
+        for i = 0 to array.size(nwogCE) - 1
+            float ce_i = array.get(nwogCE, i)
+            if not na(ce_i) and ce_i > entryPrice and ce_i < target1
+                if na(bestCE) or ce_i < bestCE
+                    bestCE := ce_i
+        if not na(bestCE)
+            target2 := target1
+            target1 := bestCE
+    else if fpfvgDirection == "BEARISH"
+        if not na(ndogCELevel) and ndogCELevel < entryPrice and ndogCELevel > target1
+            bestCE := ndogCELevel
+        for i = 0 to array.size(nwogCE) - 1
+            float ce_i = array.get(nwogCE, i)
+            if not na(ce_i) and ce_i < entryPrice and ce_i > target1
+                if na(bestCE) or ce_i > bestCE
+                    bestCE := ce_i
+        if not na(bestCE)
+            target2 := target1
+            target1 := bestCE
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// DASHBOARD â€” TRADE PLAN ONLY (bottom-left)
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ALL-STARS GATE (hoisted to top level for dual-indicator use, v22.2)
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+bool sweepFPFVGAlignedTP = (sweepDirection == "SELL_SIDE" and fpfvgDirection == "BULLISH") or (sweepDirection == "BUY_SIDE" and fpfvgDirection == "BEARISH") or not liquiditySwept
+
+float tpRLow1 = ta.lowest(low, 5)
+float tpRLow2 = ta.lowest(low[5], 10)
+float tpRHi1  = ta.highest(high, 5)
+float tpRHi2  = ta.highest(high[5], 10)
+bool tpEqLows = math.abs(tpRLow1 - tpRLow2) <= tpLiqTol and tpRLow1 < close and tpRLow2 < close
+bool tpEqHigs = math.abs(tpRHi1  - tpRHi2)  <= tpLiqTol and tpRHi1  > close and tpRHi2  > close
+
+bool tpSellBlocks = tpSellBelow and not na(tpSellLevel) and (close - tpSellLevel) <= tpBlockDist
+bool tpBuyBlocks  = tpBuyAbove  and not na(tpBuyLevel)  and (tpBuyLevel - close)  <= tpBlockDist
+bool tpEqLowBlock = tpEqLows and (close - tpRLow1) <= tpBlockDist
+bool tpEqHigBlock = tpEqHigs and (tpRHi1 - close)  <= tpBlockDist
+
+bool tpPendingBlockLong  = tpSellBlocks or tpEqLowBlock
+bool tpPendingBlockShort = tpBuyBlocks  or tpEqHigBlock
+bool tpPendingBlock = (fpfvgDirection == "BULLISH" and tpPendingBlockLong) or (fpfvgDirection == "BEARISH" and tpPendingBlockShort)
+
+bool locationGateActive = true
+bool allStarsAlignedTP = fpfvgComplete and not na(entryPrice) and qualityScoreNormalized >= effectiveMinQuality and overnightQualityOK and liquiditySwept and inEntryWindow and inApprovedWindow and not inDeadZone and atrOK and notInEquilibrium and not activeDirectionalConflict and sweepFPFVGAlignedTP and not discoveryDirectionBlock and not tpPendingBlock and not (locationGateActive and fpfvgDirection == "BULLISH" and inPremium) and not (locationGateActive and fpfvgDirection == "BEARISH" and inDiscount) and not (fpfvgDirection == "BEARISH" and extremeBullTrend) and not (fpfvgDirection == "BULLISH" and extremeBearTrend) and not (fpfvgDirection == "BEARISH" and strongBullTrend and qualityScoreNormalized < 10) and not (fpfvgDirection == "BULLISH" and strongBearTrend and qualityScoreNormalized < 10) and not (weeklyCounterTrend and not isDiscoveryMode) and not (not isDiscoveryMode and counterDailyShort) and not (not isDiscoveryMode and counterDailyLong) and not (isDiscoveryMode and counterDailyShort and qualityScoreNormalized < 10) and not (isDiscoveryMode and counterDailyLong and qualityScoreNormalized < 10) and not (liquidityMismatchShort and qualityScoreNormalized < 10) and not (liquidityMismatchLong  and qualityScoreNormalized < 10) and not staleSweep and not g1_dead
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// DUAL-INDICATOR ENTRY AUTHORIZATION (v22.2)
+// Fires ONLY when CP and TP agree on a confirmed bar close.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+float stopPoints = not na(entryPrice) and not na(stopLoss) ? math.abs(entryPrice - stopLoss) : na
+plot(stopPoints, title="Stop Points", display=display.data_window, color=color.new(color.fuchsia, 100))
+
+bool dualAuthorizedLong  = allStarsAlignedTP and cpAlignedLong  and fpfvgDirection == "BULLISH"
+bool dualAuthorizedShort = allStarsAlignedTP and cpAlignedShort and fpfvgDirection == "BEARISH" and not g3_nyaft
+bool dualAuthorized      = dualAuthorizedLong or dualAuthorizedShort
+
+bool enterNowLong  = barstate.isconfirmed and dualAuthorizedLong  and not dualAuthorizedLong[1]
+bool enterNowShort = barstate.isconfirmed and dualAuthorizedShort and not dualAuthorizedShort[1]
+
+alertcondition(enterNowLong,  title="ðŸš¨ ENTER NOW â€” LONG (Dual-Indicator Authorized)",  message="{\"version\":\"1\",\"panel_version\":\"v23\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"LONG\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
+alertcondition(enterNowShort, title="ðŸš¨ ENTER NOW â€” SHORT (Dual-Indicator Authorized)", message="{\"version\":\"1\",\"panel_version\":\"v23\",\"ticker\":\"{{ticker}}\",\"price\":{{close}},\"direction\":\"SHORT\",\"tier\":\"dual_authorized\",\"alert_type\":\"enter_now_dual\",\"timestamp\":\"{{time}}\"}")
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// STATE MACHINE (v23 â€” INDICATOR-1) â€” 4-state Sync Architecture
+// Inputs from v22.2 above:
+//   cpInputsWired, cpAlignedLong, cpAlignedShort     (lines 32-34)
+//   equilibriumBlockWired, inEquilibriumNoMansLand   (Layer 2 â€” INDICATOR-2)
+//   gradientOverlapWired, gradientLevelOverlap       (Layer 7 â€” INDICATOR-5)
+//   pda1_liquiditySweep, pda2_fpfvgProven, pda3_timeAndGradient, allThreePDAs  (Layer 8 â€” INDICATOR-6)
+//   entryAnchorPrice, entryAnchorType, pdaHierarchyCount    (Layer 9 â€” INDICATOR-7, NOT a gate)
+//   bodyThroughCEWarning, timeInGapWarning, puppyOnPorchWarning, barcodingWarning, warningCount  (Layer 8 â€” INDICATOR-8, populates Phase 2/3 placeholders)
+//   pdaCandleCount, pdaTimerStatus, pdaTimeExceeded reassignment  (Layer 8 BONUS â€” INDICATOR-9; declared downstream of Layer 9 due to dependency on entryWickCEs/entryVIPrice/entryToleranceInPrice from INDICATOR-7)
+// NOTE (INDICATOR-9 ordering fix): Phase 2/3 + syncState assignment have been RELOCATED downstream of the Layer 9 + INDICATOR-9 detection blocks (originally placed after Phase 1 in INDICATOR-1). See "PHASE 2/3 + syncState RELOCATED" marker mid-Region-B for the original location.
+//   allStarsAlignedTP                                  (line 1331)
+//   dualAuthorized                                     (line 1342, kept for v22.2 alerts)
+//   fpfvgDirection, fpfvgComplete, hasFPFVG, fpfvgStep (existing)
+//   liquiditySwept, inEntryWindow, inDeadZone          (existing)
+//   activeDirectionalConflict, tpPendingBlock          (existing)
+//   qualityScoreNormalized, effectiveMinQuality        (existing)
+// Warning placeholders are false until INDICATOR-8 + INDICATOR-9 populate them.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// LAYER 8 â€” Model Invalidation Warnings (v23 â€” INDICATOR-8, Scope L0b: Warnings 1-4)
+// Warning 5 (HTF FVG OPPOSITION) deferred to INDICATOR-10 polish per L0b.
+// Warnings 1-4 use existing TP variables â€” no new request.security calls.
+// L1a: shared priceInsideFPFVG_postStep3 predicate (gates on fpfvgStep >= 3).
+// L2a: BODY THROUGH CE is sticky; clears on new FPFVG OR manual operator override.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€â”€ L2 escape hatch (operator-required mitigation) â”€â”€â”€
+manualClearBodyThroughCE = input.bool(false, "Manual Clear: Body Through CE Sticky Flag", group="Layer 8 â€” Invalidation Warnings", tooltip="Flip true to clear sticky BODY THROUGH CE warning if reset logic fails. Flip back to false after clearing.")
+
+// â”€â”€â”€ Shared FPFVG-state predicates â”€â”€â”€
+bool priceInsideFPFVG_postStep3 = hasFPFVG and fpfvgStep >= 3 and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+bool priceInsideFPFVG_any       = hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+
+// â”€â”€â”€ Helper: pairwise candle overlap percentage (for BARCODING) â”€â”€â”€
+calculateBarOverlap(float h1, float l1, float h2, float l2) =>
+    float overlapHigh = math.min(h1, h2)
+    float overlapLow  = math.max(l1, l2)
+    float overlap     = overlapHigh - overlapLow
+    float range1      = h1 - l1
+    float range2      = h2 - l2
+    float avgRange    = (range1 + range2) / 2
+    avgRange > 0 ? math.max(0, overlap / avgRange) : 0
+
+// â”€â”€â”€ Warning 2: BODY THROUGH CE (L2a sticky + manual clear escape hatch) â”€â”€â”€
+float ceLevel = not na(fpfvgTop) and not na(fpfvgBottom) ? (fpfvgTop + fpfvgBottom) / 2 : na
+var bool bodyThroughCEInvalidated = false
+
+// Reset on new FPFVG formation (edge), no FPFVG, or manual operator clear
+if (hasFPFVG and not hasFPFVG[1]) or not hasFPFVG or manualClearBodyThroughCE
+    bodyThroughCEInvalidated := false
+
+// Set sticky on body close through CE to wrong half
+if hasFPFVG and not na(ceLevel) and ((fpfvgDirection == "BULLISH" and close < ceLevel) or (fpfvgDirection == "BEARISH" and close > ceLevel))
+    bodyThroughCEInvalidated := true
+
+bool bodyThroughCEWarning = bodyThroughCEInvalidated
+
+// â”€â”€â”€ Warning 1: TIME IN GAP (4+ consecutive bars inside post-Step 3) â”€â”€â”€
+var int barsInsideFPFVG = 0
+if priceInsideFPFVG_postStep3
+    barsInsideFPFVG := barsInsideFPFVG + 1
+else
+    barsInsideFPFVG := 0
+bool timeInGapWarning = barsInsideFPFVG >= 4
+
+// â”€â”€â”€ Warning 3: PUPPY ON PORCH (exit + return within 2 bars) â”€â”€â”€
+var int barsOutsideFPFVG = 0
+var bool exitedFPFVG = false
+bool puppyOnPorchWarning = false
+
+// Reset on new FPFVG formation
+if hasFPFVG and not hasFPFVG[1]
+    exitedFPFVG := false
+    barsOutsideFPFVG := 0
+
+// Detect exit edge (was inside last bar, not inside this bar)
+if priceInsideFPFVG_any[1] and not priceInsideFPFVG_any and not exitedFPFVG
+    exitedFPFVG := true
+    barsOutsideFPFVG := 0
+
+if exitedFPFVG
+    if priceInsideFPFVG_any
+        // Returned â€” fire if within 2 bars of exit
+        puppyOnPorchWarning := barsOutsideFPFVG <= 2
+        exitedFPFVG := false
+        barsOutsideFPFVG := 0
+    else
+        barsOutsideFPFVG := barsOutsideFPFVG + 1
+        // Confirmed displacement â€” clear flag, no warning
+        if barsOutsideFPFVG >= 5
+            exitedFPFVG := false
+
+// â”€â”€â”€ Warning 4: BARCODING (3 consecutive bars inside FPFVG with 70%+ pairwise overlap) â”€â”€â”€
+float barcodeOverlap_0_1 = calculateBarOverlap(high[0], low[0], high[1], low[1])
+float barcodeOverlap_1_2 = calculateBarOverlap(high[1], low[1], high[2], low[2])
+float barcodeMaxOverlap  = math.max(barcodeOverlap_0_1, barcodeOverlap_1_2)
+bool barcodingWarning    = priceInsideFPFVG_postStep3 and priceInsideFPFVG_postStep3[1] and priceInsideFPFVG_postStep3[2] and barcodeOverlap_0_1 >= 0.70 and barcodeOverlap_1_2 >= 0.70
+
+// ─── Warning 6: AMD MANIPULATION PHASE ──────────────────────────────────────────
+// Pattern A: directionally-correct but structurally early. First 30 min of session
+// open before any sweep = Judas Swing window. C6 research: 33% of Elite losses.
+bool warningAMDManipulation = inManipulationWindow and sweepDirection == "NONE"
+
+// â”€â”€â”€ Aggregate warning count â”€â”€â”€
+int warningCount = (bodyThroughCEWarning ? 1 : 0) + (timeInGapWarning ? 1 : 0) + (puppyOnPorchWarning ? 1 : 0) + (barcodingWarning ? 1 : 0) + (warningAMDManipulation ? 1 : 0)
+
+// â”€â”€â”€ Compose into Region B placeholder slots (replaces INDICATOR-1 false defaults) â”€â”€â”€
+bool warningStructural   = bodyThroughCEWarning
+bool warningTimeBased    = timeInGapWarning or puppyOnPorchWarning or barcodingWarning
+bool warningHTFOpposing  = false  // Warning 5 â†’ INDICATOR-10 polish (deferred per L0b)
+bool pdaTimeExceeded     = false  // PDA Time Counter Ã¢â€°Â¥ 5         â†’ INDICATOR-9
+
+// â”€â”€â”€ Composite booleans (asymmetry-fix oracle per D2 â€” consume CP signal) â”€â”€â”€
+bool cpAgreesLong  = cpAlignedLong  and fpfvgDirection == "BULLISH"
+bool cpAgreesShort = cpAlignedShort and fpfvgDirection == "BEARISH"
+bool cpAgrees      = cpAgreesLong or cpAgreesShort
+bool setupForming  = liquiditySwept or hasFPFVG or fpfvgComplete
+
+string tradeDir = fpfvgDirection == "BULLISH" ? "LONG" : fpfvgDirection == "BEARISH" ? "SHORT" : "â€”"
+
+// â”€â”€â”€ LAYER 8 â€” Three PDAs Required (v23 â€” INDICATOR-6, J3a explicit gate) â”€â”€â”€
+// J3a INDICATOR-6: explicit 3-PDA gate
+// Logically redundant with allStarsAlignedTP + INDICATOR-5 gradient gate under
+// Universal interpretation. Defense in depth: future checkpoints may refactor
+// upstream gates; this gate catches divergence.
+// PDA #3 graceful degrades when gradient input unwired (matches INDICATOR-5 pattern).
+bool pda1_liquiditySweep   = liquiditySwept
+bool pda2_fpfvgProven      = hasFPFVG and fpfvgStep >= 3
+bool pda3_timeAndGradient  = inEntryWindow and (not gradientOverlapWired or gradientLevelOverlap)
+int  pdaCount              = (pda1_liquiditySweep ? 1 : 0) + (pda2_fpfvgProven ? 1 : 0) + (pda3_timeAndGradient ? 1 : 0)
+bool allThreePDAs          = pda1_liquiditySweep and pda2_fpfvgProven and pda3_timeAndGradient
+
+// â”€â”€â”€ PHASE 1: base state from positive conditions (priority order) â”€â”€â”€
+// D11b: WAIT-branch preserves v22.2 statusMsg chain specificity for diagnostic richness.
+string baseState  = "WAIT"
+string baseReason = ""
+
+if not cpInputsWired
+    baseState  := "WAIT"
+    baseReason := "CP inputs not wired"
+else if equilibriumBlockWired and inEquilibriumNoMansLand
+    baseState  := "WAIT"
+    baseReason := "â›” Equilibrium No-Man's-Land â€” FVGs unreliable"
+else if allStarsAlignedTP and cpAgrees
+    if gradientOverlapWired and not gradientLevelOverlap
+        baseState  := "WATCH"
+        baseReason := "â³ TP+CP aligned â€” no gradient overlap (waiting for retest at gradient level)"
+    else if not allThreePDAs
+        baseState  := "WATCH"
+        baseReason := "â³ TP+CP aligned â€” missing PDA " + (not pda1_liquiditySweep ? "#1 (Sweep)" : not pda2_fpfvgProven ? "#2 (FPFVG Step3)" : "#3 (Time+Grad)")
+    else
+        baseState  := "ENTER"
+        baseReason := "ðŸš¨ ENTER NOW â€” " + tradeDir + " â€” PRESS THE BUTTON"
+else if allStarsAlignedTP and not cpAgrees
+    baseState  := "WATCH"
+    baseReason := "â³ TP Authorized â€” Waiting for CP agreement"
+else if setupForming
+    baseState  := "SETUP BUILDING"
+    baseReason := fpfvgComplete ? "âœ… FPFVG complete â€” entry valid NOW (Step 4/4)" : hasFPFVG ? "â³ FPFVG forming â€” Step " + str.tostring(fpfvgStep) + "/4" : "âš™ Sweep complete â€” Step " + str.tostring(fpfvgStep) + "/4"
+else
+    baseState  := "WAIT"
+    baseReason := activeDirectionalConflict ? "âš  W.Bias vs Narrative conflict â€” no trade" : tpPendingBlock ? "âš  Pending liq â€” sweep first" : inDeadZone ? "â›” Dead zone active â€” no trades" : not inEntryWindow ? "â³ Outside session hours" : qualityScoreNormalized < effectiveMinQuality ? "âš  Score too low â€” need " + str.tostring(effectiveMinQuality) + "+" : not liquiditySwept ? "Ã¢ÂÅ’ No liquidity sweep yet â€” pass on session" : "Ã°Å¸â€˜Â Watching for setup"
+
+// â”€â”€â”€ PHASE 2/3 + syncState RELOCATED (v23 â€” INDICATOR-9 ordering fix) â”€â”€â”€
+// Phase 2 (hard-kill) + Phase 3 (demotion) + syncState/statusText assignment have
+// been moved DOWNSTREAM of Layer 9 (INDICATOR-7) + INDICATOR-9 PDA Time Counter
+// detection blocks so that all warning sources are evaluated BEFORE Phase 2/3
+// reads them. See block after pdaHierarchyCount line below.
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// LAYER 9 â€” PDA Hierarchy when overlapping (v23 â€” INDICATOR-7, Scope B)
+// Precision aid: when multiple PDA types overlap at FPFVG, identify highest-
+// priority type (Wick > FVG > VI per K1a). NOT a hard gate â€” display + plot
+// only per K6c. Existing entryPrice unchanged.
+// DRIFT SURFACE: wick threshold (30%) and proximity tolerance mirror INDICATOR-5
+// CP gradient logic. If INDICATOR-10 polish changes either, update BOTH places.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€â”€ K2a: Wick CE detection (mirror INDICATOR-5 logic, 30% threshold) â”€â”€â”€
+[d1HEntry, d1LEntry, d1OEntry, d1CEntry] = request.security(syminfo.tickerid, "1D", [high[1], low[1], open[1], close[1]], lookahead=barmerge.lookahead_off)
+[d2HEntry, d2LEntry, d2OEntry, d2CEntry] = request.security(syminfo.tickerid, "1D", [high[2], low[2], open[2], close[2]], lookahead=barmerge.lookahead_off)
+[d3HEntry, d3LEntry, d3OEntry, d3CEntry] = request.security(syminfo.tickerid, "1D", [high[3], low[3], open[3], close[3]], lookahead=barmerge.lookahead_off)
+[d4HEntry, d4LEntry, d4OEntry, d4CEntry] = request.security(syminfo.tickerid, "1D", [high[4], low[4], open[4], close[4]], lookahead=barmerge.lookahead_off)
+[d5HEntry, d5LEntry, d5OEntry, d5CEntry] = request.security(syminfo.tickerid, "1D", [high[5], low[5], open[5], close[5]], lookahead=barmerge.lookahead_off)
+
+addEntryWickCE(float dH, float dL, float dO, float dC, array<float> arr) =>
+    float dRange = dH - dL
+    float bodyTop = math.max(dO, dC)
+    float bodyBot = math.min(dO, dC)
+    float upperWickLen = dH - bodyTop
+    float lowerWickLen = bodyBot - dL
+    if dRange > 0 and upperWickLen / dRange >= 0.30
+        array.push(arr, (dH + bodyTop) / 2)
+    if dRange > 0 and lowerWickLen / dRange >= 0.30
+        array.push(arr, (dL + bodyBot) / 2)
+
+var array<float> entryWickCEs = array.new<float>(0)
+array.clear(entryWickCEs)
+addEntryWickCE(d1HEntry, d1LEntry, d1OEntry, d1CEntry, entryWickCEs)
+addEntryWickCE(d2HEntry, d2LEntry, d2OEntry, d2CEntry, entryWickCEs)
+addEntryWickCE(d3HEntry, d3LEntry, d3OEntry, d3CEntry, entryWickCEs)
+addEntryWickCE(d4HEntry, d4LEntry, d4OEntry, d4CEntry, entryWickCEs)
+addEntryWickCE(d5HEntry, d5LEntry, d5OEntry, d5CEntry, entryWickCEs)
+
+// â”€â”€â”€ Per-instrument tolerance (mirror INDICATOR-5 K3a auto-detect, no override) â”€â”€â”€
+int entryToleranceTicks = instrument == "MGC" ? 5 : instrument == "MNQ" ? 10 : instrument == "MES" ? 5 : instrument == "MCL" ? 5 : instrument == "EURUSD" or instrument == "GBPUSD" or instrument == "EURJPY" or instrument == "USDJPY" ? 5 : 5
+float entryToleranceInPrice = entryToleranceTicks * syminfo.mintick
+
+// â”€â”€â”€ K3: Volume Imbalance detection (2-candle non-overlap, 20-bar lookback) â”€â”€â”€
+float entryVIPrice = na
+string entryVIType = ""
+
+if hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom)
+    for i = 0 to 19
+        if low[i] > high[i + 1]
+            float viMid = (low[i] + high[i + 1]) / 2
+            if math.abs(viMid - fpfvgTop) <= entryToleranceInPrice or math.abs(viMid - fpfvgBottom) <= entryToleranceInPrice
+                entryVIPrice := viMid
+                entryVIType := "Bullish VI"
+                break
+        if high[i] < low[i + 1]
+            float viMid = (high[i] + low[i + 1]) / 2
+            if math.abs(viMid - fpfvgTop) <= entryToleranceInPrice or math.abs(viMid - fpfvgBottom) <= entryToleranceInPrice
+                entryVIPrice := viMid
+                entryVIType := "Bearish VI"
+                break
+
+// â”€â”€â”€ PDA hierarchy selection (Wick > FVG > VI per K1a) â”€â”€â”€
+bool hasWickPDA = false
+float wickPDAPrice = na
+bool hasFVGPDA = false
+float fvgPDAPrice = na
+bool hasVIPDA = not na(entryVIPrice)
+
+if hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom)
+    // Procedural lesson #4 (preemptive â€” CP v23 hit RE10045 on identical pattern at INDICATOR-11):
+    // empty-init array + push-only growth â†’ MUST wrap iteration in size guard.
+    if array.size(entryWickCEs) > 0
+        for i = 0 to array.size(entryWickCEs) - 1
+            float wickCE = array.get(entryWickCEs, i)
+            if not na(wickCE)
+                if math.abs(wickCE - fpfvgTop) <= entryToleranceInPrice or math.abs(wickCE - fpfvgBottom) <= entryToleranceInPrice
+                    hasWickPDA := true
+                    wickPDAPrice := wickCE
+                    break
+    hasFVGPDA := true
+    fvgPDAPrice := (fpfvgTop + fpfvgBottom) / 2
+
+float entryAnchorPrice = na
+string entryAnchorType = ""
+
+if hasWickPDA
+    entryAnchorPrice := wickPDAPrice
+    entryAnchorType := "Wick CE"
+else if hasFVGPDA
+    entryAnchorPrice := fvgPDAPrice
+    entryAnchorType := "FVG midpoint"
+else if hasVIPDA
+    entryAnchorPrice := entryVIPrice
+    entryAnchorType := entryVIType
+
+int pdaHierarchyCount = (hasWickPDA ? 1 : 0) + (hasFVGPDA ? 1 : 0) + (hasVIPDA ? 1 : 0)
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// LAYER 8 BONUS â€” PDA Time Counter (v23 â€” INDICATOR-9, Apr 23 Trader Roundup)
+// Hard kill at 5+ candles inside any tracked PDA. Per ICT: "Beyond 5 = excessive,
+// probabilities shift exponentially against you."
+// M0b scope: tracks FPFVG zone + wick CE proximity + VI proximity (uses
+// entryToleranceInPrice from INDICATOR-7 Layer 9 block immediately above).
+// M3b reset: counter resets when price exits all PDAs OR new FPFVG forms.
+// Reassigns pdaTimeExceeded placeholder declared in Layer 8 composer at line ~1465.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€â”€ Detect price inside any tracked PDA (M0b: FPFVG zone OR wick CE proximity OR VI proximity) â”€â”€â”€
+bool priceInsideFPFVG_pdaTimer = hasFPFVG and not na(fpfvgTop) and not na(fpfvgBottom) and high <= fpfvgTop and low >= fpfvgBottom
+
+bool priceNearWickPDA = false
+if array.size(entryWickCEs) > 0
+    for i = 0 to array.size(entryWickCEs) - 1
+        float wickCE = array.get(entryWickCEs, i)
+        if not na(wickCE) and math.abs(close - wickCE) <= entryToleranceInPrice
+            priceNearWickPDA := true
+            break
+
+bool priceNearVIPDA = not na(entryVIPrice) and math.abs(close - entryVIPrice) <= entryToleranceInPrice
+
+bool priceInsideAnyPDA = priceInsideFPFVG_pdaTimer or priceNearWickPDA or priceNearVIPDA
+
+// â”€â”€â”€ PDA candle counter (M3b: reset on price exit OR new FPFVG edge) â”€â”€â”€
+var int pdaCandleCount = 0
+
+if hasFPFVG and not hasFPFVG[1]
+    pdaCandleCount := 0
+
+if priceInsideAnyPDA
+    pdaCandleCount := pdaCandleCount + 1
+else
+    pdaCandleCount := 0
+
+string pdaTimerStatus = pdaCandleCount <= 3 ? "GREEN" : pdaCandleCount == 4 ? "YELLOW" : "RED"
+
+// â”€â”€â”€ Reassign INDICATOR-1 placeholder (declared at line ~1465 as false; INDICATOR-9 fills) â”€â”€â”€
+pdaTimeExceeded := pdaCandleCount >= 5
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// PHASE 2/3 + syncState (v23 â€” relocated by INDICATOR-9 ordering fix from line ~1518)
+// All warning sources now detected (Layer 8 from INDICATOR-8 + PDA Time Counter
+// from INDICATOR-9). Phase 2/3 reads complete warning state and applies
+// hard-kill / demotion in priority order.
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// â”€â”€â”€ PHASE 2: hard-kill warnings override base state â”€â”€â”€
+string finalState  = baseState
+string finalReason = baseReason
+
+if pdaTimeExceeded
+    finalState  := "WAIT"
+    finalReason := "PDA Time Exceeded (cut bait)"
+
+if warningStructural
+    finalState  := "WAIT"
+    finalReason := "Body through CE (model invalidated)"
+
+// â”€â”€â”€ PHASE 3: demotion warnings downgrade active state â”€â”€â”€
+if finalState == "ENTER" and (warningTimeBased or warningHTFOpposing)
+    finalState  := "WATCH"
+    finalReason := "âš  ENTER REVOKED â€” warning active"
+
+if finalState == "WATCH" and warningTimeBased
+    finalState  := "SETUP BUILDING"
+    finalReason := "âš  Demoted from WATCH â€” time-based warning"
+
+// ─── PHASE 3b: AMD Manipulation gate (demotion only, never hard-kill) ──────────
+if finalState == "ENTER" and warningAMDManipulation
+    finalState  := "WATCH"
+    finalReason := "⚠ AMD MANIPULATION — wait for sweep"
+
+if finalState == "WATCH" and warningAMDManipulation
+    finalState  := "SETUP BUILDING"
+    finalReason := "⚠ AMD Manipulation window — wait for sweep"
+
+// â”€â”€â”€ Persist as named state (table cell renders this) â”€â”€â”€
+var string syncState  = "WAIT"
+var string statusText = "WAIT â€” Initialization"
+
+syncState  := finalState
+statusText := finalState + " â€” " + finalReason
+
+// â”€â”€â”€ Entry Anchor plot for EFL consumption (placed after Layer 9 block per pine v6 forward-ref rules) â”€â”€â”€
+plot(entryAnchorPrice, title="Entry Anchor Price", display=display.data_window, color=color.new(color.aqua, 100))
+
+if showDashboard
+    // Procedural lesson #5: row count must match actual `r += 1` increments.
+    // v22.2 baseline = 14. v23 added 4 rows: INDICATOR-6 (3 PDAs) + INDICATOR-7 (ENTRY ANCHOR)
+    // + INDICATOR-8 (WARNINGS) + INDICATOR-9 (PDA TIMER) = 18 actual rows. v23.2 +3 gate rows = 21. +2 buffer = 23.
+    // RE10040 caught at INDICATOR-11 chart application (bar 2395, row 14 out of bounds).
+    table tp = table.new(position.bottom_left, 3, 23, bgcolor=color.new(color.black, 15), border_color=color.new(color.gray, 60), border_width=1)
+    int r = 0
+
+    table.cell(tp, 0, r, "TRADE PLAN", text_color=color.lime, text_size=size.normal, bgcolor=color.new(color.black, 30))
+    table.cell(tp, 1, r, instrument,   text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black, 30))
+    table.cell(tp, 2, r, "",           bgcolor=color.new(color.black, 30))
+    r += 1
+
+    color modeCol = isDiscoveryMode ? color.aqua : is2022Model ? color.orange : color.gray
+    table.cell(tp, 0, r, marketMode,         text_color=modeCol,  text_size=size.tiny)
+    table.cell(tp, 1, r, atrRegime + " Â· ATR " + str.tostring(math.round(atrDaily, 1)), text_color=atrCol, text_size=size.tiny)
+    table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny)
+    r += 1
+
+    string tpSessContext = "â€”"
+    color  tpSessCol     = color.gray
+    if isAsianEntry or isAsianFormation
+        tpSessContext := weeklyRangePercent <= 40 ? "Asian â€” Discount â†’ LONGS" :
+                         weeklyRangePercent >= 60 ? "Asian â€” Premium â†’ SHORTS" :
+                         "Asian â€” Mid-Range â†’ Narrative only"
+        tpSessCol := weeklyRangePercent <= 40 ? color.lime :
+                     weeklyRangePercent >= 60 ? color.red : color.yellow
+    else if isLondonEntry or isLondonFormation
+        bool alSwept = not na(asianSessionLow)  and low  <= asianSessionLow
+        bool ahSwept = not na(asianSessionHigh) and high >= asianSessionHigh
+        tpSessContext := alSwept ? "London swept Asian Low â†’ LONG" :
+                         ahSwept ? "London swept Asian High â†’ SHORT" :
+                         "London â€” Watching for Asian sweep"
+        tpSessCol := alSwept ? color.lime : ahSwept ? color.red : color.orange
+    else if isNYAMEntry or isNYOpenFormation
+        bool llSwept = not na(londonSessionLow)  and low  <= londonSessionLow
+        bool lhSwept = not na(londonSessionHigh) and high >= londonSessionHigh
+        tpSessContext := llSwept ? "NY swept London Low â†’ LONG" :
+                         lhSwept ? "NY swept London High â†’ SHORT" :
+                         "NY â€” Watching for London sweep"
+        tpSessCol := llSwept ? color.lime : lhSwept ? color.red : color.orange
+
+    table.cell(tp, 0, r, "Session:", text_color=color.gray, text_size=size.tiny)
+    table.cell(tp, 1, r, tpSessContext, text_color=tpSessCol, text_size=size.tiny)
+    table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny)
+    r += 1
+
+    bool inReducedMode = is2022Model or (not isDiscoveryMode and not is2022Model)
+    if inReducedMode
+        table.cell(tp, 0, r, "âš   REDUCE SIZE", text_color=color.yellow, text_size=size.tiny)
+        table.cell(tp, 1, r, "Need 8+ quality in choppy market", text_color=color.yellow, text_size=size.tiny, bgcolor=color.new(color.yellow, 88))
+        table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny)
+        r += 1
+
+    color scoreCol = qualityScoreNormalized >= 8 ? color.lime : qualityScoreNormalized >= 6 ? color.yellow : color.red
+    color scoreBg  = qualityScoreNormalized >= 8 ? color.new(color.green, 80) : qualityScoreNormalized >= 6 ? color.new(color.yellow, 85) : color.new(color.red, 80)
+    string scoreLbl = qualityScoreNormalized >= 8 ? str.tostring(qualityScoreNormalized) + " / 10  âœ… AUTHORIZED" : qualityScoreNormalized >= 6 ? str.tostring(qualityScoreNormalized) + " / 10  âš  MARGINAL" : str.tostring(qualityScoreNormalized) + " / 10  BELOW THRESHOLD"
+    table.cell(tp, 0, r, "SETUP SCORE:", text_color=color.white, text_size=size.small)
+    table.cell(tp, 1, r, scoreLbl, text_color=scoreCol, text_size=size.normal, bgcolor=scoreBg)
+    table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny, bgcolor=scoreBg)
+    r += 1
+
+    // -- SETUP GATE rows (v23.2) --
+    string g1Lbl = not inp_hourGates ? "OFF" : g1_dead ? "DEAD ZONE" : g1_elite ? "ELITE +1" : "NEUTRAL"
+    color  g1Col = not inp_hourGates ? color.gray : g1_dead ? color.red : g1_elite ? color.lime : color.gray
+    color  g1Bg  = g1_dead ? color.new(color.red, 80) : g1_elite ? color.new(color.green, 80) : color.new(color.black, 40)
+    table.cell(tp, 0, r, "HOUR GATE:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, g1Lbl, text_color=g1Col, text_size=size.tiny, bgcolor=g1Bg)
+    table.cell(tp, 2, r, str.tostring(g_et_h) + "h ET", text_color=color.gray, text_size=size.tiny)
+    r += 1
+    string g2Lbl = not inp_rangeEx ? "OFF" : not g2_valid ? "NO DATA" : g2_near ? "EXTREME +2" : "OUTER -1"
+    color  g2Col = not inp_rangeEx ? color.gray : g2_near ? color.lime : color.orange
+    color  g2Bg  = g2_near ? color.new(color.green, 80) : color.new(color.black, 40)
+    table.cell(tp, 0, r, "RANGE EXT:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, g2Lbl, text_color=g2Col, text_size=size.tiny, bgcolor=g2Bg)
+    table.cell(tp, 2, r, re60_R > 0 ? str.tostring(math.round(re60_R, 1)) + "R" : "--", text_color=color.gray, text_size=size.tiny)
+    r += 1
+    string g3Lbl = not inp_nyAft ? "OFF" : g3_nyaft ? "AFT SHORT BLOCK" : (g3_fvg and hasFPFVG) ? "FVG -2" : "CLEAR"
+    color  g3Col = not inp_nyAft ? color.gray : g3_nyaft ? color.red : (g3_fvg and hasFPFVG) ? color.orange : color.gray
+    color  g3Bg  = g3_nyaft ? color.new(color.red, 80) : color.new(color.black, 40)
+    table.cell(tp, 0, r, "NY AFT:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, g3Lbl, text_color=g3Col, text_size=size.tiny, bgcolor=g3Bg)
+    table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny)
+    r += 1
+
+    if inOTEWindow and (otePDHBroken or otePDLBroken)
+        bool bullOTE = otePDHBroken and not na(ote62)
+        bool bearOTE = otePDLBroken and not na(ote62B)
+        string oteLabel = priceInOTEZone ? "Ã°Å¸Å½Â¯ IN OTE ZONE" : "OTE Zone:"
+        color oteCol = priceInOTEZone ? color.lime : color.yellow
+        color oteBg  = priceInOTEZone ? color.new(color.green, 70) : color.new(color.black, 40)
+        string ote62Str  = bullOTE ? str.tostring(ote62,  format.mintick) : bearOTE ? str.tostring(ote62B,  format.mintick) : "â€”"
+        string ote705Str = bullOTE ? str.tostring(ote705, format.mintick) : bearOTE ? str.tostring(ote705B, format.mintick) : "â€”"
+        string ote79Str  = bullOTE ? str.tostring(ote79,  format.mintick) : bearOTE ? str.tostring(ote79B,  format.mintick) : "â€”"
+        string oteDetail = "62%: " + ote62Str + "  70.5%: " + ote705Str + "  79%: " + ote79Str
+        table.cell(tp, 0, r, oteLabel, text_color=oteCol, text_size=size.tiny, bgcolor=oteBg)
+        table.cell(tp, 1, r, oteDetail, text_color=oteCol, text_size=size.small, bgcolor=oteBg)
+        table.cell(tp, 2, r, bullOTE ? "Bull OTE" : "Bear OTE", text_color=oteCol, text_size=size.tiny, bgcolor=oteBg)
+        r += 1
+
+    if hasFPFVG or fpfvgComplete
+        if tradeBlocked
+            string blockReason = "â›” No " + fpfvgDirection + " in Discovery Mode"
+            table.cell(tp, 0, r, "Direction:", text_color=color.gray, text_size=size.tiny)
+            table.cell(tp, 1, r, blockReason, text_color=color.orange, text_size=size.small, bgcolor=color.new(color.orange, 88))
+            table.cell(tp, 2, r, "", bgcolor=color.new(color.orange, 88))
+            r += 1
+        else
+            color dirCol = fpfvgDirection == "BULLISH" ? color.lime : fpfvgDirection == "BEARISH" ? color.red : color.gray
+            color dirBg  = fpfvgDirection == "BULLISH" ? color.new(color.green, 82) : fpfvgDirection == "BEARISH" ? color.new(color.red, 82) : color.new(color.gray, 88)
+            table.cell(tp, 0, r, "Direction:", text_color=color.gray, text_size=size.tiny)
+            table.cell(tp, 1, r, fpfvgDirection == "BULLISH" ? "Ã¢â€“Â²  LONG" : fpfvgDirection == "BEARISH" ? "Ã¢â€“Â¼  SHORT" : "â€” NONE", text_color=dirCol, text_size=size.small, bgcolor=dirBg)
+            table.cell(tp, 2, r, "", text_color=color.gray, text_size=size.tiny, bgcolor=dirBg)
+            r += 1
+
+    if not na(entryPrice)
+        table.cell(tp, 0, r, "Entry:", text_color=color.gray, text_size=size.tiny)
+        table.cell(tp, 1, r, str.tostring(entryPrice, format.mintick), text_color=color.white, text_size=size.small)
+        table.cell(tp, 2, r, fpfvgComplete ? "Ã¢â€ Â enter here" : "Ã¢â€ Â when price returns", text_color=color.new(color.gray, 30), text_size=size.tiny)
+        r += 1
+
+    if not na(stopLoss)
+        table.cell(tp, 0, r, "Stop Loss:", text_color=color.gray, text_size=size.tiny)
+        table.cell(tp, 1, r, str.tostring(stopLoss, format.mintick), text_color=color.red, text_size=size.small)
+        float riskAmt = math.abs(entryPrice - stopLoss)
+        table.cell(tp, 2, r, "Risk: " + str.tostring(math.round(riskAmt, 2)), text_color=color.new(color.gray, 20), text_size=size.tiny)
+        r += 1
+
+    if not na(target1)
+        table.cell(tp, 0, r, "Target 1:", text_color=color.gray, text_size=size.tiny)
+        table.cell(tp, 1, r, str.tostring(target1, format.mintick), text_color=color.lime, text_size=size.small)
+        float r1 = not na(stopLoss) and math.abs(entryPrice - stopLoss) > 0 ? math.abs(target1 - entryPrice) / math.abs(entryPrice - stopLoss) : na
+        table.cell(tp, 2, r, not na(r1) ? str.tostring(math.round(r1, 1)) + "R" : "", text_color=color.new(color.lime, 20), text_size=size.tiny)
+        r += 1
+
+    if not na(target2)
+        table.cell(tp, 0, r, "Target 2:", text_color=color.gray, text_size=size.tiny)
+        table.cell(tp, 1, r, str.tostring(target2, format.mintick), text_color=color.lime, text_size=size.small)
+        float r2 = not na(stopLoss) and math.abs(entryPrice - stopLoss) > 0 ? math.abs(target2 - entryPrice) / math.abs(entryPrice - stopLoss) : na
+        table.cell(tp, 2, r, not na(r2) ? str.tostring(math.round(r2, 1)) + "R" : "", text_color=color.new(color.lime, 20), text_size=size.tiny)
+        r += 1
+
+    // â”€â”€â”€ LAYER 8 â€” Three PDAs row (v23 â€” INDICATOR-6) â”€â”€â”€
+    string pda1Mark = pda1_liquiditySweep ? "âœ“ Sweep"     : "âœ— Sweep"
+    string pda2Mark = pda2_fpfvgProven    ? "âœ“ FPFVG[3]"  : "âœ— FPFVG[3]"
+    string pda3Mark = pda3_timeAndGradient ? "âœ“ Time+Grad" : "âœ— Time+Grad"
+    string pdaText  = pdaCount == 0 ? "â€” â€” â€”" : pda1Mark + "  " + pda2Mark + "  " + pda3Mark
+    string pdaCountText = pdaCount == 3 ? "3/3 âœ… AUTHORIZED" : str.tostring(pdaCount) + "/3"
+    color  pdaFg    = pdaCount == 3 ? color.lime : pdaCount == 2 ? color.yellow : color.gray
+    table.cell(tp, 0, r, "3 PDAs:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, pdaText, text_color=pdaFg, text_size=size.tiny)
+    table.cell(tp, 2, r, pdaCountText, text_color=pdaFg, text_size=size.tiny)
+    r += 1
+
+    // â”€â”€â”€ LAYER 9 â€” Entry Anchor row (v23 â€” INDICATOR-7) â”€â”€â”€
+    string anchorTypeLabel = na(entryAnchorPrice) ? "â€”" : entryAnchorType
+    string anchorPriceLabel = na(entryAnchorPrice) ? "â€”" : str.tostring(entryAnchorPrice, format.mintick)
+    string anchorHierarchyLabel = pdaHierarchyCount == 0 ? "" : pdaHierarchyCount == 1 ? "(single)" : pdaHierarchyCount == 2 ? "(2 overlap)" : "(3 overlap â€” high confluence)"
+    color anchorFg = na(entryAnchorPrice) ? color.gray : pdaHierarchyCount >= 2 ? color.lime : color.yellow
+    table.cell(tp, 0, r, "ENTRY ANCHOR:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, anchorTypeLabel + " @ " + anchorPriceLabel, text_color=anchorFg, text_size=size.tiny)
+    table.cell(tp, 2, r, anchorHierarchyLabel, text_color=anchorFg, text_size=size.tiny)
+    r += 1
+
+    // â”€â”€â”€ LAYER 8 â€” Active Warnings row (v23 â€” INDICATOR-8) â”€â”€â”€
+    string warningList = ""
+    if bodyThroughCEWarning
+        warningList := warningList + "â›” BODY-THRU-CE  "
+    if timeInGapWarning
+        warningList := warningList + "âš  Time-in-Gap (" + str.tostring(barsInsideFPFVG) + "b)  "
+    if puppyOnPorchWarning
+        warningList := warningList + "âš  Puppy-on-Porch  "
+    if barcodingWarning
+        warningList := warningList + "âš  Barcoding (" + str.tostring(math.round(barcodeMaxOverlap * 100)) + "%)  "
+    if warningAMDManipulation
+        warningList := warningList + "⚠ AMD-Manip (no sweep)  "
+    string warningCellText = warningList == "" ? "None" : warningList
+    color warningFg = bodyThroughCEWarning ? color.red : (timeInGapWarning or puppyOnPorchWarning or barcodingWarning or warningAMDManipulation) ? color.orange : color.gray
+    table.cell(tp, 0, r, "WARNINGS:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, warningCellText, text_color=warningFg, text_size=size.tiny)
+    table.cell(tp, 2, r, str.tostring(warningCount) + "/5", text_color=warningFg, text_size=size.tiny)
+    r += 1
+
+    // â”€â”€â”€ LAYER 8 BONUS â€” PDA Time Counter row (v23 â€” INDICATOR-9) â”€â”€â”€
+    string pdaTimerBars = (pdaCandleCount >= 1 ? "Ã¢â€“â€œ" : "Ã¢â€“â€˜") + (pdaCandleCount >= 2 ? "Ã¢â€“â€œ" : "Ã¢â€“â€˜") + (pdaCandleCount >= 3 ? "Ã¢â€“â€œ" : "Ã¢â€“â€˜") + (pdaCandleCount >= 4 ? "Ã¢â€“â€œ" : "Ã¢â€“â€˜") + (pdaCandleCount >= 5 ? "Ã¢â€“â€œ" : "Ã¢â€“â€˜")
+    color pdaTimerFg = pdaTimerStatus == "GREEN" ? color.lime : pdaTimerStatus == "YELLOW" ? color.yellow : color.red
+    string pdaTimerCellText = pdaCandleCount == 0 ? "no PDA contact" : pdaTimerBars + " " + str.tostring(pdaCandleCount) + "/5 " + pdaTimerStatus
+    table.cell(tp, 0, r, "PDA TIMER:", text_color=color.white, text_size=size.tiny)
+    table.cell(tp, 1, r, pdaTimerCellText, text_color=pdaTimerFg, text_size=size.tiny)
+    table.cell(tp, 2, r, pdaTimeExceeded ? "â›” EXCEEDED" : "", text_color=pdaTimerFg, text_size=size.tiny)
+    r += 1
+
+    // â”€â”€â”€ DUAL-INDICATOR SYNC ROW (v22.2 â†’ v23: verdict word bound to state machine) â”€â”€â”€
+    string cpTag = not cpInputsWired  ? "CP: â€” (wire inputs)" : cpAlignedLong ? "CP: âœ“ Long (" + str.tostring(cpScoreInt) + "/10)" : cpAlignedShort ? "CP: âœ“ Short (" + str.tostring(cpScoreInt) + "/10)" : "CP: â€“ (" + str.tostring(cpScoreInt) + "/10)"
+    string tpTag = allStarsAlignedTP  ? "TP: âœ“ Aligned (" + str.tostring(qualityScoreNormalized) + "/10)" : "TP: " + str.tostring(qualityScoreNormalized) + "/" + str.tostring(effectiveMinQuality)
+    string verdict = "â†’ " + syncState
+    color  syncBg  = syncState == "ENTER" ? color.new(color.green, 10) : cpInputsWired and (cpAlignedLong or cpAlignedShort or allStarsAlignedTP) ? color.new(color.yellow, 70) : color.new(color.gray, 85)
+    table.cell(tp, 0, r, "SYNC:", text_color=color.white, text_size=size.tiny, bgcolor=syncBg)
+    table.cell(tp, 1, r, cpTag + "  Â·  " + tpTag + "  " + verdict, text_color=color.white, text_size=size.small, bgcolor=syncBg)
+    table.cell(tp, 2, r, syncState == "ENTER" ? "ðŸš¨" : "", text_color=color.white, text_size=size.small, bgcolor=syncBg)
+    r += 1
+
+    color statusFg = syncState == "ENTER" ? color.white : syncState == "WATCH" ? color.orange : syncState == "SETUP BUILDING" ? color.yellow : color.gray
+    color statusBg = syncState == "ENTER" ? color.new(color.green, 0) : color.new(color.black, 100)
+    table.cell(tp, 0, r, "STATUS:", text_color=color.white, text_size=size.tiny, bgcolor=statusBg)
+    table.cell(tp, 1, r, statusText, text_color=statusFg, text_size=size.small, bgcolor=statusBg)
+    table.cell(tp, 2, r, syncState == "ENTER" ? "âœ…" : "", text_color=color.white, text_size=size.small, bgcolor=statusBg)
+    r += 1

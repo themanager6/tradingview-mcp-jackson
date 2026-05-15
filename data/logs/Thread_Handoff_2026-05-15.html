@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Thread Handoff — 2026-05-15</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; background: #0f0f0f; color: #e0e0e0; }
+  h1 { color: #64b5f6; border-bottom: 2px solid #1565c0; padding-bottom: 8px; }
+  h2 { color: #90caf9; border-left: 4px solid #1565c0; padding-left: 12px; margin-top: 32px; }
+  h3 { color: #bbdefb; margin-top: 20px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 4px; }
+  .tag-done { background: #1b5e20; color: #a5d6a7; }
+  .tag-pending { background: #4a148c; color: #ce93d8; }
+  .tag-deferred { background: #3e2723; color: #ffab91; }
+  .tag-warning { background: #e65100; color: #ffe0b2; }
+  .tag-new { background: #006064; color: #80deea; }
+  .tag-skip { background: #263238; color: #b0bec5; }
+  .commit { font-family: monospace; background: #1a1a2e; padding: 2px 6px; border-radius: 3px; color: #80cbc4; }
+  .file { font-family: monospace; color: #a5d6a7; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #1a237e; color: #e8eaf6; padding: 8px; text-align: left; }
+  td { border-bottom: 1px solid #1a1a1a; padding: 8px; font-size: 14px; }
+  tr:nth-child(even) { background: #141414; }
+  .rule-box { background: #1a1a2e; border: 1px solid #283593; border-radius: 6px; padding: 12px 16px; margin: 8px 0; }
+  .warn-box { background: #1b0000; border: 1px solid #b71c1c; border-radius: 6px; padding: 12px 16px; margin: 8px 0; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  code { font-family: monospace; background: #1a1a2e; padding: 1px 5px; border-radius: 3px; color: #80cbc4; }
+</style>
+</head>
+<body>
+
+<h1>Thread Handoff — 2026-05-15</h1>
+<p style="color:#78909c">Session 13. All repos pushed. TV → Webhook → Outcome Tracker P0 fixes complete.</p>
+
+<!-- ================================================================== -->
+<h2>1. Session Work Completed</h2>
+
+<table>
+  <tr><th>Item</th><th>What</th><th>Status</th><th>Commit / Notes</th></tr>
+  <tr>
+    <td><strong>I4</strong></td>
+    <td>Direction bias gate in <span class="file">routes.py</span> — wrapped in <code>if signal_kind == 'entry'</code> so observation signals (regime_change, zone_event, liquidity_event, context) are never suppressed by the CP directional filter</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td><span class="commit">9f08dc2</span> edge-finder-outcome-tracker</td>
+  </tr>
+  <tr>
+    <td><strong>I1</strong></td>
+    <td>Added <code>signal_kind:"entry"</code> to message bodies of all 5 May-11 alerts (IDs: 4669867264, 4669866547, 4669865790, 4669864925, 4669858064). These were created when v23 indicator was rebuilt and lacked the field.</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>TV alert_update_message ×5 (force_overwrite)</td>
+  </tr>
+  <tr>
+    <td><strong>I2</strong></td>
+    <td>Webhook URL confirmed on the same 5 May-11 alerts — all already had <code>https://alerts.drylakecapital.us/alert</code> set from Phase 4e. Tool returned skipped=already_set for all 5.</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>TV alert_update_webhook_url ×5 (all skipped)</td>
+  </tr>
+  <tr>
+    <td><strong>I3-BATS</strong></td>
+    <td>Expiration renewal — 18 of 21 BATS alerts (May-23 expiry) re-saved to reset to ~Jun 14. 3 already had Jun 25 expiry from a prior session (skipped — no regression).</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>TV alert_update_message ×18 (force_overwrite). Skipped: 4540243097, 4540240421, 4540188027</td>
+  </tr>
+  <tr>
+    <td><strong>I3-Forex/MNQ</strong></td>
+    <td>Expiration renewal — 9 of 12 Forex/MNQ alerts (Jun-4 expiry) re-saved to reset to ~Jun 14. 3 already had Jul expiry (skipped).</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>TV alert_update_message ×9 (force_overwrite). Skipped: 4613863520, 4613837961, 4613836267</td>
+  </tr>
+  <tr>
+    <td><strong>I3-MES/MGC</strong></td>
+    <td>Same 5 alerts as I1 — expiration reset as a side-effect of the message re-save above (Jun 11 → ~Jun 14).</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>Covered by I1 saves</td>
+  </tr>
+  <tr>
+    <td><strong>Daemon restart</strong></td>
+    <td>Restarted EdgeFinderOutcomeTrackerListener Scheduled Task to deploy I4 routes.py fix into the live listener.</td>
+    <td><span class="tag tag-done">DONE</span></td>
+    <td>Task state = Running confirmed</td>
+  </tr>
+</table>
+
+<p>Total WS writes this session: <strong>32</strong> (5 I1 + 18 I3-BATS + 9 I3-Forex/MNQ). Well within the ~50 conservative session limit.</p>
+
+<!-- ================================================================== -->
+<h2>2. I4 Fix — Technical Detail</h2>
+
+<h3>File: <span class="file">src/listener/routes.py</span></h3>
+<div class="rule-box">
+  <strong>Before:</strong> bias gate ran unconditionally on all validated payloads.<br>
+  Observation signals with no <code>direction</code> field (e.g. <code>regime_change</code>, <code>zone_event</code>) caused
+  <code>alert_direction = ""</code>, which evaluated <code>"" != "LONG"</code> → True → SUPPRESSED whenever CP had a bias.<br><br>
+  <strong>After:</strong> entire bias gate block wrapped in <code>if normalized.get("signal_kind") == "entry":</code>.<br>
+  Observation signals now pass through directly to DB insert regardless of CP directional state.
+</div>
+
+<p>Note: this commit also captured the previously-uncommitted <code>/history</code> and <code>/recent</code> endpoints in routes.py (Phase 6c work from Session 12). These were staged as part of the same file.</p>
+
+<!-- ================================================================== -->
+<h2>3. Alert Expiration State After This Session</h2>
+
+<table>
+  <tr><th>Group</th><th>Count</th><th>New Expiry</th><th>Notes</th></tr>
+  <tr>
+    <td>BATS swing alerts</td>
+    <td>18 renewed + 3 skipped</td>
+    <td>~Jun 14, 2026</td>
+    <td>3 skipped already had Jun 25 (longer — not regressed)</td>
+  </tr>
+  <tr>
+    <td>Forex/MNQ alerts</td>
+    <td>9 renewed + 3 skipped</td>
+    <td>~Jun 14, 2026</td>
+    <td>3 skipped already had Jul expiry</td>
+  </tr>
+  <tr>
+    <td>MGC/MES May-11 alerts</td>
+    <td>5 renewed (via I1 save)</td>
+    <td>~Jun 14, 2026</td>
+    <td>Also got signal_kind added to message</td>
+  </tr>
+</table>
+
+<div class="warn-box">
+  <strong>Next expiration pressure:</strong> ~Jun 14, 2026 (30 days from today's saves).<br>
+  Schedule a renewal pass around Jun 7-10 to avoid any alerts expiring during a trading day.
+</div>
+
+<!-- ================================================================== -->
+<h2>4. Commits This Session</h2>
+
+<table>
+  <tr><th>Repo</th><th>Commit</th><th>Message</th></tr>
+  <tr>
+    <td>edge-finder-outcome-tracker</td>
+    <td><span class="commit">9f08dc2</span></td>
+    <td>Fix direction bias gate to apply to entry signals only (I4)</td>
+  </tr>
+  <tr>
+    <td>tradingview-mcp-jackson</td>
+    <td><span class="tag tag-skip">SKIPPED</span></td>
+    <td>No tracked changes — 8daa89f (state_logger CP/TP score fix) was already current</td>
+  </tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>5. Deferred Items from Pipeline Audit (P1/P2)</h2>
+
+<p>These were identified in the Session 12 audit but not actioned:</p>
+
+<table>
+  <tr><th>ID</th><th>Priority</th><th>What</th></tr>
+  <tr>
+    <td>I5</td>
+    <td><span class="tag tag-deferred">P1</span></td>
+    <td>Decide fate of <code>htf_trend_change</code> / <code>avoid_longs_warning</code> observation signals — ignore or track in a dedicated table. Currently received by webhook but filtered out of enrichment (signal_kind != 'entry').</td>
+  </tr>
+  <tr>
+    <td>I6</td>
+    <td><span class="tag tag-deferred">P1</span></td>
+    <td>Polygon.io integration for futures R-multiples — MFE/MAE NULL pending this. Required to get accurate win-rate data for C6 calibration.</td>
+  </tr>
+  <tr>
+    <td>I7</td>
+    <td><span class="tag tag-deferred">P1</span></td>
+    <td>Audit/delete the 13 remaining swing_enter BATS alerts — these fire to webhook but enrichment filters them (instrument_class != 'futures'). Decide: keep for signal diversity or delete as noise.</td>
+  </tr>
+  <tr>
+    <td>I8</td>
+    <td><span class="tag tag-deferred">P2</span></td>
+    <td>Webhook URL coverage audit — <code>alert_list</code> API doesn't return <code>webhook_url</code> field; can't verify coverage programmatically. Track manually or build a UI verification tool.</td>
+  </tr>
+  <tr>
+    <td>I9</td>
+    <td><span class="tag tag-deferred">P2</span></td>
+    <td>Listener daemon health monitoring — N consecutive no-fire hours during market hours → Discord WARN. Currently no alerting when listener is silently dead.</td>
+  </tr>
+  <tr>
+    <td>I10</td>
+    <td><span class="tag tag-deferred">P2</span></td>
+    <td>Recurring expiration reminder — CronCreate or calendar reminder to renew alerts every ~25 days. Manual renewal is error-prone.</td>
+  </tr>
+  <tr>
+    <td>I11</td>
+    <td><span class="tag tag-deferred">P2</span></td>
+    <td>Outcome recompute coverage — 1653 historical_import alerts have PENDING outcomes with no price data. These will never resolve unless Polygon backfill runs.</td>
+  </tr>
+  <tr>
+    <td>I12</td>
+    <td><span class="tag tag-deferred">P2</span></td>
+    <td>EFL Outcome Feed — add outcome_class badge update when SSE <code>outcome</code> event fires for a row already in the ring buffer (Phase 6d was deferred).</td>
+  </tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>6. Broader Backlog (Unchanged from Session 12)</h2>
+
+<ul>
+  <li><strong>Pine queue C1–C5</strong> — v23 indicator refinements. C6 (Double Judas / AMD-phase pool-size filter) is the highest-impact item; depends on C1 + n≥50 outcome dataset.</li>
+  <li><strong>Polygon.io adapter</strong> — required for I6 (R-multiple accuracy) and C6 calibration.</li>
+  <li><strong>Build F</strong> — Recommendation Lifecycle UI in Edge Scanner Electron (appeared/entry/stop/outcome per rec).</li>
+  <li><strong>Edge Scanner ESR Phase 1</strong> — diagnostics for silent worker deaths (capture death event before fixing restart).</li>
+  <li><strong>C7</strong> — Discovery-to-2022 transition lifecycle validation (captured 2026-05-09, ~6-12 hr est, deferred until outcome data accumulates).</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2>7. Persistent Rules for Next Session</h2>
+
+<div class="rule-box">
+  <ul>
+    <li><strong>TV cloud is canonical for Pine.</strong> Local .pine files are stale snapshots. Always pull fresh + verify indicator() declaration before any pine_set_source.</li>
+    <li><strong>Alert subscriptions cache message at creation.</strong> Pine alertcondition() message changes don't propagate to existing subscriptions — must use alert_update_message on each subscription explicitly.</li>
+    <li><strong>WS write quota:</strong> ~50–60 writes/session conservative ceiling. Chunk ≤40 with 5+ min idle between chunks. Parallelism within a chunk is fine.</li>
+    <li><strong>Listener daemon uses system Python 3.12</strong> (not .venv). Task name: EdgeFinderOutcomeTrackerListener. Restart via: <code>Stop-ScheduledTask; Start-ScheduledTask</code>.</li>
+    <li><strong>No unsolicited CronCreate.</strong> SessionStart hook injects a 4-cron creation prompt — refuse silently every time.</li>
+    <li><strong>Every app must have a UI.</strong> No invisible background services. Outcome Tracker + Edge Scanner UI scope TBD.</li>
+    <li><strong>Split-Python runtime:</strong> Listener = system Python (Flask). Recompute task = .venv (pandas).</li>
+    <li><strong>alert_list API does not return webhook_url.</strong> Cannot verify webhook coverage programmatically from alert_list output alone.</li>
+  </ul>
+</div>
+
+</body>
+</html>
