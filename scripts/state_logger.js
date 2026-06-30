@@ -42,6 +42,7 @@ const SYMBOLS = [
   'CME_MINI:MNQ1!',
   'NYMEX:MCL1!',
   'CME_MINI:MES1!',
+  'CBOT_MINI:MYM1!',
   'FX:EURUSD',
   'FX:EURJPY',
   'FX:USDJPY',
